@@ -1,0 +1,4 @@
+Mediapipe>=0.10.18
+numpy
+opencv-python==4.10.0.84
+ipykernel

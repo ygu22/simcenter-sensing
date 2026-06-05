@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# Data files — never commit subject data
+# ---------------------------------------------------------------------------
+*.csv
+*.tsv
+*.parquet
+*.h5
+*.hdf5
+*.mat
+*.edf
+*.bdf
+*.acq
+*.feather
+data/
+raw_data/
+derived_data/
+processed_data/
+
+# Video / image data
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.svo
+*.svo2
+*.bag
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.bmp
+# Allow doc images (diagrams, scrubbed screenshots) — must be PII-free
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+!**/assets/**/*.png
+!**/assets/**/*.jpg
+!**/assets/**/*.jpeg
+
+# Audio
+*.wav
+*.flac
+*.mp3
+*.m4a
+
+# ---------------------------------------------------------------------------
+# Environment, secrets, lab-specific configs
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials/
+*.local.yml
+*.local.yaml
+*.local.json
+lab_config/
+study_configs/
+subject_lists*
+participant*
+roster*
+
+# ---------------------------------------------------------------------------
+# Private workspace (intentionally untracked except for the README)
+# ---------------------------------------------------------------------------
+STAGING/*
+!STAGING/README.md
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# R
+# ---------------------------------------------------------------------------
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rcheck/
+
+# ---------------------------------------------------------------------------
+# OS / editor
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+logs/

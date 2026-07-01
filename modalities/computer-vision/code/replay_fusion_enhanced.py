@@ -84,6 +84,10 @@ def open_client_from_svo(svo_path, depth_mode=sl.DEPTH_MODE.NEURAL, fps=None):
     init.set_from_svo_file(svo_path)
     init.depth_mode = depth_mode
     init.svo_real_time_mode = False   # offline faster-than-real-time
+    # Match the Fusion coordinate frame/units so published bodies line up with
+    # the fused world (Fusion is initialized RIGHT_HANDED_Z_UP / METER below).
+    init.coordinate_units  = sl.UNIT.METER
+    init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP
 
     if fps: init.camera_fps = fps
     err = cam.open(init)
@@ -180,21 +184,24 @@ def write_csv_header(writer, kp_count):
     cols += ["head_x","head_y","head_z","gaze_dx","gaze_dy","gaze_dz"]
     writer.writerow(cols)
 
-def compute_vel_acc(prev_pts, prev_t, pts, t):
+def compute_vel_acc(prev_pts, prev_t, pts, t, prev_vel=None):
     """
     prev_pts, pts: (K,3) arrays in meters (WORLD)
     t, prev_t: nanoseconds
+    prev_vel: (K,3) velocity from the previous frame, or None on the first frame.
     Returns vel, acc as (K,3) arrays; if not enough history, zeros.
     """
     if prev_pts is None or prev_t is None or t == prev_t:
-        K = pts.shape[0]
         z = np.zeros_like(pts)
         return z, z
     dt = (t - prev_t) * 1e-9  # seconds
     v = (pts - prev_pts) / max(dt, 1e-6)
-    # accel needs v_{t-1}; caller can supply previous v if desired.
-    # For simplicity, return zeros for a 2-point estimate; caller can smooth over history.
-    a = np.zeros_like(v)
+    # Acceleration = change in velocity over the same dt. Needs a previous
+    # velocity; on the first usable frame we don't have one yet, so return zeros.
+    if prev_vel is None:
+        a = np.zeros_like(v)
+    else:
+        a = (v - prev_vel) / max(dt, 1e-6)
     return v, a
 
 def draw_2d_skeleton(frame_bgra, body, color=(0,255,0)):
@@ -293,11 +300,13 @@ def main():
     fpss = [i.camera_configuration.fps for i in info]
     widths = [i.camera_configuration.resolution.width for i in info]
     heights= [i.camera_configuration.resolution.height for i in info]
+    out_sizes = [None]*len(clients)   # per-camera (out_w, out_h); avoids one camera's size leaking to another
     for idx, cam in enumerate(clients):
         # --- writer creation ---
         if WRITE_DEMO_VIDEOS:
             fps = VIDEO_FPS_OVERRIDE or int(round(fpss[idx]))
             out_w, out_h = int(widths[idx]*VIDEO_SCALE), int(heights[idx]*VIDEO_SCALE)
+            out_sizes[idx] = (out_w, out_h)
 
             # robust choice on Jetson:
             fourcc = cv2.VideoWriter_fourcc(*"MJPG")
@@ -318,6 +327,7 @@ def main():
     
     # 4) CSV setup
     kp_count = 34 if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else 38
+    bf_str   = "BODY_34" if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38"
     csvf = open(OUT_CSV, "w", newline="")
     writer = csv.writer(csvf)
     write_csv_header(writer, kp_count)
@@ -325,6 +335,7 @@ def main():
     # kinematics buffers
     prev_pts   = {}   # person_id -> (K,3)
     prev_time  = {}   # person_id -> ns
+    prev_vel   = {}   # person_id -> (K,3) previous velocity, for acceleration
     # optional: maintain short histories to estimate acceleration better
     v_hist = defaultdict(lambda: deque(maxlen=MAX_HISTORY))
 
@@ -359,54 +370,69 @@ def main():
                     frames_bgra.append(None)
                     local_bodies.append(sl.Bodies())
 
+            # Reset the per-frame head/gaze map up front so the demo-video block
+            # below always sees a defined value, even on frames with no fused
+            # bodies or when fusion.grab() did not return SUCCESS.
+            fused_head_gaze = {}   # pid -> (head_world(3,), gaze_dir_world(3,))
+
             # Now grab fusion
             if fusion.grab(rt_f) == sl.ERROR_CODE.SUCCESS:
                 fused = sl.Bodies()
                 fusion.retrieve_bodies(fused)
                 ts_ns = fused.timestamp.get_nanoseconds()
 
-                # CSV rows (fused 3D)
+                # One pass per fused body. Every column in `row` — keypoints,
+                # kinematics, head and gaze — is derived from THIS same body, so
+                # they stay matched to one person. (The previous version rebuilt
+                # head/gaze in a nested loop that clobbered the loop variable and
+                # wrote the last body's head/gaze onto every row.)
                 for b in fused.body_list:
-                    kp = np.asarray(b.keypoint, dtype=np.float32)  # (K,3)
-                    row = [ts_ns, b.id, float(b.confidence), int(b.tracking_state)]
+                    pid = b.id
+                    kp = np.asarray(b.keypoint, dtype=np.float32)  # (K,3) WORLD
+                    row = [ts_ns, pid, float(b.confidence), int(b.tracking_state)]
                     for p in kp:
                         row.extend([float(p[0]), float(p[1]), float(p[2])])
 
                     if KINEMATICS_ENABLED:
-                        pid = b.id
-                        v, a = compute_vel_acc(prev_pts.get(pid), prev_time.get(pid), kp, ts_ns)
-                        # optional smoothing: take median over a short window
+                        v, a = compute_vel_acc(prev_pts.get(pid), prev_time.get(pid),
+                                               kp, ts_ns, prev_vel.get(pid))
+                        # smoothing: median velocity over a short window
                         v_hist[pid].append(v)
                         v_smooth = np.median(np.stack(v_hist[pid], axis=0), axis=0) if len(v_hist[pid])>1 else v
                         for p in v_smooth: row.extend([float(p[0]), float(p[1]), float(p[2])])
                         for p in a:        row.extend([float(p[0]), float(p[1]), float(p[2])])
-                        prev_pts[pid] = kp
+                        prev_pts[pid]  = kp
                         prev_time[pid] = ts_ns
-                    # kp: (K,3) fused WORLD points already set above
+                        prev_vel[pid]  = v
+
+                    # Head frame + gaze for THIS body, matched to its own row.
                     head_o, R, fwd, qflag = compute_head_frame_world(
-                        kp, 
-                        body_format="BODY_34" if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38",
+                        kp, body_format=bf_str,
                         keys_override=None  # or pass your custom dict once you verify indices
                     )
-                    # Collect fused head+gaze by fused person id for this frame
-                    fused_head_gaze = {}  # pid -> (head_world(3,), gaze_dir_world(3,))
-                    for b in fused.body_list:
-                        kp = np.asarray(b.keypoint, dtype=np.float32)
-                        head_o, R, fwd, qflag = compute_head_frame_world(
-                            kp,
-                            body_format="BODY_34" if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38",
-                            keys_override=None
-                        )
-                        if head_o is not None and fwd is not None:
-                            fused_head_gaze[b.id] = (head_o, fwd / (np.linalg.norm(fwd)+1e-9))
-                        # (you also appended these to the CSV)
-                    if head_o is None:
-                        head_o = np.array([np.nan, np.nan, np.nan])
-                        fwd    = np.array([np.nan, np.nan, np.nan])
-
-                    row.extend([float(head_o[0]), float(head_o[1]), float(head_o[2]),
-                                float(fwd[0]),    float(fwd[1]),    float(fwd[2])])
+                    if head_o is not None and fwd is not None:
+                        gaze_dir = fwd / (np.linalg.norm(fwd) + 1e-9)
+                        fused_head_gaze[pid] = (head_o, gaze_dir)
+                        row.extend([float(head_o[0]), float(head_o[1]), float(head_o[2]),
+                                    float(gaze_dir[0]), float(gaze_dir[1]), float(gaze_dir[2])])
+                    else:
+                        row.extend([float("nan")] * 6)
                     writer.writerow(row)
+
+            # Head crops: save an upper-body/"head-ish" crop per local detection.
+            # Uses each camera's own 2D bodies; runs independently of demo videos.
+            if SAVE_HEAD_CROPS:
+                for i, frame in enumerate(frames_bgra):
+                    if frame is None:
+                        continue
+                    for body in local_bodies[i].body_list:
+                        crop = extract_head_crop(frame, body, crop_size=CROP_SIZE)
+                        if crop is None:
+                            continue
+                        crop_path = os.path.join(
+                            HEAD_CROP_DIR, f"cam{i+1}_pid{body.id}_{frame_idx:06d}.png"
+                        )
+                        cv2.imwrite(crop_path, crop)
 
             # Videos: draw local 2D skeletons & (optional) gaze arrows, then write
             GAZE_DRAW_LEN_M = 2.0  # on-image arrow length (in meters along the 3D ray)
@@ -458,7 +484,8 @@ def main():
                     # Ensure BGRA -> BGR uint8 and size matches
                     frame_bgr = frame[:, :, :3].copy()
                     if VIDEO_SCALE != 1.0:
-                        frame_bgr = cv2.resize(frame_bgr, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+                        ow, oh = out_sizes[i]   # this camera's own output size
+                        frame_bgr = cv2.resize(frame_bgr, (ow, oh), interpolation=cv2.INTER_LINEAR)
 
                     if writers[i] is not None and writers[i].isOpened():
                         writers[i].write(frame_bgr)

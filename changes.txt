@@ -1,0 +1,187 @@
+========================================================================
+simcenter-sensing — Change Log
+========================================================================
+This file documents rectifications made to programs in the repository.
+Newest entries at the top.
+
+
+========================================================================
+2026-07-01 — Hybrid 3D (Fusion) pipeline review + fixes
+Files: modalities/computer-vision/code/replay_fusion_enhanced.py
+       (helpers reviewed: gaze_geometry.py, projection_helpers.py)
+========================================================================
+
+------------------------------------------------------------------------
+PART 1 — COHESIVE REVIEW: how the hybrid 3D image is constructed
+------------------------------------------------------------------------
+The pipeline builds a single fused 3D skeleton ("hybrid 3D image") from two
+ZED SVO2 recordings as follows:
+
+  1. Each SVO is opened as a Fusion *client* (open_client_from_svo). Positional
+     tracking is enabled (static cameras), then body tracking, and each client
+     publishes its detections to local shared memory.
+  2. A Fusion instance is initialized (RIGHT_HANDED_Z_UP, meters). Each camera
+     is registered with its serial and its world_T_cam extrinsics, read from
+     fusion_calibration.json (projection_helpers.load_extrinsics_from_fusion_conf).
+  3. On each iteration every client is grabbed once; then Fusion is grabbed and
+     the *fused* 3D skeletons (WORLD coords) are retrieved and written to CSV,
+     with per-joint velocity/acceleration and a head-frame/gaze vector
+     (gaze_geometry.compute_head_frame_world).
+  4. For the demo videos, each camera draws its own local 2D skeleton, and the
+     fused head/gaze is projected back into that camera's image
+     (projection_helpers.project_point) to draw a gaze arrow.
+
+The helpers are sound:
+  - gaze_geometry.py: robust head-frame construction with sensible fallbacks
+    and a re-orthonormalized right-handed basis. No changes needed.
+  - projection_helpers.py: standard SE3 inversion, pinhole projection, Fusion
+    calib parsing. No changes needed. (See issue F below re: which frame the
+    extrinsics are expressed in — a data/config question, not a code bug.)
+
+The problems were concentrated in replay_fusion_enhanced.py and would have
+corrupted the fused output and/or crashed the demo-video stage.
+
+------------------------------------------------------------------------
+PART 2 — ISSUES FOUND
+------------------------------------------------------------------------
+A. (CRITICAL) Head/gaze columns matched to the WRONG person.
+   The per-body CSV loop contained a *second* `for b in fused.body_list`
+   nested inside it that reused the loop variable `b` (and `kp`, `head_o`,
+   `fwd`). Keypoints and kinematics were written for the correct body, but the
+   head_* and gaze_* columns ended up holding whichever body was LAST in the
+   list. The head-frame computed earlier in the outer loop was discarded.
+
+B. (CRITICAL) Possible NameError in the demo-video stage.
+   `fused_head_gaze` was created *inside* the fused-body loop, but consumed
+   later in the demo-video block. On any frame with no fused bodies, or when
+   fusion.grab() didn't return SUCCESS, the variable never existed and the
+   video block would raise NameError.
+
+C. (CRITICAL) One camera's output size leaked to the other.
+   `out_w`/`out_h` were set inside the writer-creation loop and kept the LAST
+   camera's dimensions. In the main loop every camera's frame was resized to
+   those same dims. With cameras of different resolutions, camera 0's frame got
+   camera 1's size and VideoWriter.write() would silently drop it.
+
+D. Acceleration was always zero.
+   compute_vel_acc returned a = zeros by design, yet the CSV advertises
+   k*_ax/ay/az columns. Velocity was real; acceleration was fake-zero.
+
+E. Head crops were dead code.
+   SAVE_HEAD_CROPS made the output dir and extract_head_crop() existed, but it
+   was never called, so no crops were ever produced.
+
+F. (VERIFY — not auto-fixable) Coordinate-frame consistency for projection.
+   Fusion runs RIGHT_HANDED_Z_UP/meters, but the clients did not set a
+   coordinate system/units (defaults: IMAGE, millimeters). Separately, the
+   gaze-arrow projection assumes a standard optical frame (+Z forward, +Y down);
+   if fusion_calibration.json stores extrinsics in the Z-up world frame, the
+   projected arrows will be misaligned. This depends on the real calibration
+   file and must be verified against actual data.
+
+------------------------------------------------------------------------
+PART 3 — FIXES APPLIED (and how)
+------------------------------------------------------------------------
+A. Collapsed the two loops into ONE pass per fused body. For each body we now
+   build keypoints, kinematics, AND that same body's head/gaze into `row`, so
+   every column stays matched to one person. Removed the discarded head-frame
+   computation and the nested loop entirely. The CSV now stores the *normalized*
+   gaze direction (unit vector) instead of the raw (un-normalized) forward.
+
+B. `fused_head_gaze = {}` is now initialized at the TOP of each frame iteration
+   (before fusion.grab), so the demo-video block always has a defined value.
+   It is populated per body inside the (now single) loop.
+
+C. Added an `out_sizes` list holding each camera's own (out_w, out_h) at writer
+   creation; the resize in the main loop now uses `out_sizes[i]` for camera i.
+
+D. compute_vel_acc now takes `prev_vel` and computes real acceleration
+   a = (v - prev_vel) / dt (zeros only on the first usable frame). main() keeps
+   a `prev_vel` dict per person and passes/stores it each frame.
+
+E. Wired up head crops: a new block runs when SAVE_HEAD_CROPS is set, iterating
+   each camera's local 2D bodies, calling extract_head_crop(), and saving to
+   HEAD_CROP_DIR as cam{n}_pid{id}_{frame:06d}.png. Runs independently of the
+   demo-video flag.
+
+F. Partially addressed: the clients now set coordinate_units=METER and
+   coordinate_system=RIGHT_HANDED_Z_UP to match Fusion (removes the units/frame
+   ambiguity on the publishing side). The projection-frame question (which frame
+   the JSON extrinsics use) is LEFT AS-IS and flagged for verification against a
+   real fusion_calibration.json before trusting the on-video gaze arrows.
+
+FOLLOW-UP / NOTES
+-----------------
+- Verify issue F with an actual calibration file + a quick visual check that the
+  gaze arrows land on the right heads.
+- Joint angles are NOT yet computed anywhere. The fixed fused CSV (3D WORLD
+  keypoints per joint) is the correct input for that; planned as the next step.
+
+
+========================================================================
+2026-07-01 — modalities/computer-vision/code/multiCameraRecord.py
+========================================================================
+
+CONTEXT
+-------
+Headless script that records SVO2 video from all detected ZED cameras.
+Reviewed for errors; the reported problem was that the save location was
+poorly documented and recordings overwrote one another.
+
+USER DECISIONS (from Q&A)
+-------------------------
+- Filename timestamp granularity ...... Date + time (full timestamp).
+- Camera 1/2 assignment ............... Fixed serial-number -> label map.
+- Serial numbers ...................... To be filled in later; placeholders
+                                        + safe fallback provided.
+
+ERRORS / ISSUES IDENTIFIED
+--------------------------
+1. OVERWRITING (reported): filename was "{serial}.svo2" only. Every session
+   wrote the same file per camera, silently overwriting prior recordings.
+   No date, no camera 1/2 label.
+2. UNDOCUMENTED SAVE LOCATION (reported): output went to "~/zed_rec" but the
+   path was never announced up front.
+3. grab() RETURN CODE IGNORED: the ZED SDK only writes a frame when grab()
+   returns SUCCESS. Failures were neither logged nor throttled, so a failing
+   grab would busy-spin the CPU.
+4. DEPTH_MODE.NEURAL for pure recording: loads a heavy AI model that is
+   unnecessary when only recording SVO files; can slow startup/streaming.
+5. UNSTABLE CAMERA ORDER: get_device_list() order is not guaranteed stable
+   between runs, so numbering purely by enumeration order is unreliable.
+
+CHANGES MADE
+------------
+A. Added a CAMERA_LABELS dict (serial -> "cam1"/"cam2") near the top of the
+   file, with placeholder serials (111111111 / 222222222) and a TODO to fill
+   in real values. Fixes issue #5 (stable, run-independent labels).
+   - Added label_for() helper with a safe fallback: any unmapped serial is
+     labelled "cam-SN<serial>", so recordings stay uniquely named even before
+     the map is filled in.
+
+B. New filename format:  <label>_<date>_<time>.svo2
+   Example:  cam1_2026-07-01_14-32-05.svo2
+   - "cam1"/"cam2" separates the cameras (your request).
+   - Date + time prevents overwriting prior videos, even for multiple
+     recordings on the same day. Fixes issue #1.
+   - A single session timestamp is generated once in main() and shared by all
+     cameras, so cam1/cam2 files from the same run carry an identical stamp
+     and are easy to pair.
+
+C. Save location now stated and logged: main() prints
+   "Saving recordings to: <out_dir>" and ensures the directory exists.
+   Fixes issue #2. (Location itself unchanged: ~/zed_rec.)
+
+D. grab() return code is now checked; failures are logged as
+   "grab failed: <err>" with a 5 ms backoff to avoid a busy-spin. Fixes #3.
+
+E. depth_mode changed NEURAL -> NONE for pure recording, with a comment on
+   how to re-enable depth if needed later. Addresses #4.
+
+F. Each detected camera's serial and resolved label are printed at startup
+   for easy identification / to read off real serials for CAMERA_LABELS.
+
+FOLLOW-UP NEEDED FROM USER
+--------------------------
+- Fill in the real ZED serial numbers in CAMERA_LABELS (replace 111111111 /
+  222222222). Until then, files use the "cam-SN<serial>" fallback names.

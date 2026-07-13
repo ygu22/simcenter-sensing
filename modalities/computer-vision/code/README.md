@@ -7,7 +7,8 @@ itself (or any host with the ZED SDK and `pyzed` installed). See
 | File                          | Stage         | Purpose                                                    |
 |-------------------------------|---------------|------------------------------------------------------------|
 | `multiCameraRecord.py`        | Recording     | Headless multi-camera SVO2 recording — one thread per ZED, H.265 compression, Ctrl-C to stop. |
-| `replay_fusion_enhanced.py`   | Processing    | Offline fusion + analytics over recorded SVOs: body tracking, 3D fused skeletons, velocity/acceleration, head-frame computation, optional head crops, optional annotated demo videos. |
+| `replay_fusion_enhanced.py`   | Processing    | Offline fusion + analytics over recorded SVOs: body tracking, 3D fused skeletons, velocity/acceleration, head-frame computation, arm joint angles, optional head crops, optional annotated demo videos. |
+| `arm_joint_angles.py`         | Processing    | Elbow + shoulder joint angles from fused 3D keypoints (BODY_34/38), using a subject-anchored anatomical frame. Imported by `replay_fusion_enhanced.py`; also runs standalone on a `fused_bodies.csv` and has a `--selftest`. |
 | `gaze_geometry.py`            | Processing    | Head-frame + forward-direction computation from BODY_34 / BODY_38 keypoints, with quality-flag fallbacks. Imported by `replay_fusion_enhanced.py`. |
 | `projection_helpers.py`       | Processing    | SE3 inversion, world→image projection, fusion-calibration loader (`fusion_calibration.json`), intrinsics from `CameraInformation`. Imported by `replay_fusion_enhanced.py`. |
 
@@ -18,9 +19,10 @@ multiCameraRecord.py        →  N × SVO2 files
                                    ↓
                           (ZED360 calibration)
                                    ↓
-replay_fusion_enhanced.py   →  fused_bodies.csv  (3D kinematics)
+replay_fusion_enhanced.py   →  fused_bodies.csv  (3D kinematics + arm angles)
    ├─ projection_helpers.py     +  demo_camN.avi   (2D overlays + gaze arrows)
-   └─ gaze_geometry.py          +  head_crops/     (optional)
+   ├─ gaze_geometry.py          +  head_crops/     (optional)
+   └─ arm_joint_angles.py
 ```
 
 ## Configuration

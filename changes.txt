@@ -6,6 +6,61 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-13 — Session protocol + PI summary + doc refresh
+Files: modalities/computer-vision/session-protocol.md   (new)
+       modalities/computer-vision/pi-summary.md          (new)
+       modalities/computer-vision/data-spec.md           (updated)
+       modalities/computer-vision/processing.md          (updated)
+       modalities/computer-vision/README.md              (updated)
+       modalities/computer-vision/code/README.md         (updated)
+========================================================================
+
+GOAL
+----
+Design an end-to-end protocol (room setup -> recording -> data) for a
+single-subject procedural-skills session, and document, in PI-facing terms,
+what data the setup yields. Focus per user: single subject, arm-angle /
+ergonomics metrics, feasibility.
+
+NEW: session-protocol.md
+  Consolidated runbook that stitches the per-phase SOPs into one flow for the
+  single-subject arm-kinematics use case: Phase 1 room setup (two ZED cameras,
+  frontal-oblique, FOV overlap for fusion, lighting, ZED360 calibration lock),
+  Phase 2 condensed pre-session checklist (adds a start-of-session "arms-down"
+  calibration frame for a 0-degree angle sanity check), Phase 3 recording with
+  sync markers, Phase 4 processing (fusion -> 3D -> angles), Phase 5 the data
+  you get + how to sanity-check it, plus run-sheet fields.
+
+NEW: pi-summary.md
+  Non-implementation summary for the PI: what we record, what we can produce
+  (fused_bodies.csv incl. arm angles, demo video, head crops), the arm-angle
+  set explained plainly, the derived analysis metrics (ROM, ergonomic exposure
+  a la RULA/REBA, movement smoothness, bimanual symmetry, working envelope,
+  tempo), feasibility evidence (pipeline runs, angle self-test, quality
+  signals), and honest limitations (calibration dependency, occlusion, gaze is
+  a head-orientation proxy, not yet validated vs a goniometer).
+
+DOC REFRESH (bring stale docs in line with the code fixes)
+  - data-spec.md: acceleration columns are now real second-differences (were
+    documented as "emitted as zeros"); added the full arm-joint-angle column
+    table; noted head_crops are now actually written + filename pattern.
+  - processing.md: added ARM_ANGLES_* config knobs, a new "Arm joint angles"
+    section with the standalone/self-test commands; replaced the stale
+    "acceleration returns zeros" TODO with a concurrent-validity TODO.
+  - README.md (CV): added session-protocol.md and pi-summary.md to the section
+    index.
+  - code/README.md: added arm_joint_angles.py to the file inventory and the
+    "how they fit together" diagram.
+
+NOTES
+  - Docs use TODO(unassigned) placeholders (matching repo convention) for
+    site-specific values still to be pinned in a pilot: exact camera
+    angles/distances/heights + a room diagram, disk GB/hour, lighting range.
+  - Recommended next step for the feasibility pitch: one pilot session, then a
+    concurrent-validity check of the angles against a reference measurement.
+
+
+========================================================================
 2026-07-13 — Arm joint angles from the fused 3D skeleton
 New file: modalities/computer-vision/code/arm_joint_angles.py
 Edited:   modalities/computer-vision/code/replay_fusion_enhanced.py

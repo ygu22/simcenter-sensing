@@ -34,6 +34,8 @@ for reference only (status: archived).
 | Processing       | [processing.md](processing.md)             | drafted     |
 | Data spec        | [data-spec.md](data-spec.md)               | drafted     |
 | Code             | [code/README.md](code/README.md)           | drafted     |
+| Session protocol (single-subject arm kinematics) | [session-protocol.md](session-protocol.md) | drafted |
+| PI summary       | [pi-summary.md](pi-summary.md)             | drafted     |
 
 ## TODOs for collaborators
 

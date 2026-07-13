@@ -36,7 +36,13 @@ def on_sigint(sig, frame):
     global STOP; STOP = True
 signal.signal(signal.SIGINT, on_sigint)
 
-def record_one(serial, out_dir, session_stamp, fps=30):
+def open_camera(serial, fps=30):
+    # Opening a ZED camera is NOT safe to race across threads — the first
+    # open() in a process does GPU/CUDA context init, and opening multiple
+    # cameras concurrently from separate threads can make every open() fail
+    # at once ("Camera::open() has not been called" style errors on all
+    # cameras). Cameras must be opened one at a time in a single thread;
+    # only the grab loop afterward is safe to parallelize.
     init = sl.InitParameters()
     init.set_from_serial_number(serial)
     init.camera_resolution = sl.RESOLUTION.AUTO
@@ -44,15 +50,15 @@ def record_one(serial, out_dir, session_stamp, fps=30):
     init.depth_mode = sl.DEPTH_MODE.NONE  # pure recording needs no depth; set NEURAL/PERFORMANCE if you add depth later
 
     cam = sl.Camera()
-    if cam.open(init) != sl.ERROR_CODE.SUCCESS:
-        print(f"[{serial}] open failed"); return
+    err = cam.open(init)
+    return cam, err
 
+def record_one(cam, serial, label, out_dir, session_stamp):
     os.makedirs(out_dir, exist_ok=True)
     # Filename: <label>_<date>_<time>.svo2  e.g. cam1_2026-07-01_14-32-05.svo2
     # - label ("cam1"/"cam2") separates the cameras
     # - the shared session date+time stamp prevents overwriting prior videos
     #   and lets you pair cam1/cam2 from the same run (identical stamp)
-    label = label_for(serial)
     fname = f"{label}_{session_stamp}.svo2"
     out_path = os.path.join(out_dir, fname)
     rec = sl.RecordingParameters(out_path, sl.SVO_COMPRESSION_MODE.H265)
@@ -87,10 +93,28 @@ def main():
     # One timestamp for the whole session so cam1/cam2 files line up.
     session_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    threads=[]
+    # Open every camera sequentially, in this thread, before starting any
+    # grab loops — see the note in open_camera() for why this can't be
+    # parallelized.
+    opened = []
     for d in devs:
-        print(f"Detected camera serial {d.serial_number} -> {label_for(d.serial_number)}")
-        t = threading.Thread(target=record_one, args=(d.serial_number, out_dir, session_stamp))
+        serial = d.serial_number
+        label = label_for(serial)
+        print(f"Detected camera serial {serial} -> {label}")
+        cam, err = open_camera(serial)
+        if err != sl.ERROR_CODE.SUCCESS:
+            print(f"[{serial}] ({label}) open failed: {err}")
+            continue
+        opened.append((cam, serial, label))
+
+    if not opened:
+        print("No cameras opened successfully."); return 1
+    if len(opened) < len(devs):
+        print(f"WARNING: only {len(opened)}/{len(devs)} cameras opened — continuing with the rest.")
+
+    threads=[]
+    for cam, serial, label in opened:
+        t = threading.Thread(target=record_one, args=(cam, serial, label, out_dir, session_stamp))
         t.start(); threads.append(t)
 
     print("Recording... Ctrl+C to stop")

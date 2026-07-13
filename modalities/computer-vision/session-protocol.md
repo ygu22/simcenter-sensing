@@ -73,8 +73,9 @@ essentials for this protocol:
 
 - [ ] `conda activate ZED_env`; `ZED_Explorer` shows **both** cameras; record
       both serials in the run sheet.
-- [ ] Serials entered in `multiCameraRecord.py` `CAMERA_LABELS` (so files come
-      out as `cam1_*` / `cam2_*`).
+- [ ] `camera_roles.json` (serial → `cam1`/`cam2` map, kept in `STAGING/cv/`)
+      deployed next to `multiCameraRecord.py` so files come out as
+      `cam1_*` / `cam2_*` — see [code/README.md](code/README.md).
 - [ ] `fusion_calibration.json` current (recalibrated if anything moved).
 - [ ] Lenses clean; lighting matches documented level; disk has capacity.
 - [ ] ZedBox clock synced ([../../docs/time-sync.md](../../docs/time-sync.md));
@@ -171,6 +172,7 @@ name; start/stop times; SVO paths + sizes; operator; notes/anomalies.
 
 ## Related
 
+- CPR specialization of this protocol: [cpr-joint-angles-protocol.md](cpr-joint-angles-protocol.md)
 - Data schema: [data-spec.md](data-spec.md)
 - PI-facing summary: [pi-summary.md](pi-summary.md)
 - Code inventory: [code/README.md](code/README.md)

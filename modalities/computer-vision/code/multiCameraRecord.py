@@ -1,5 +1,5 @@
 # multi_cam_record_headless.py
-import os, threading, signal, sys, time
+import os, threading, signal, sys, time, json
 from datetime import datetime
 import pyzed.sl as sl
 
@@ -10,14 +10,20 @@ import pyzed.sl as sl
 # This keeps "camera 1" and "camera 2" pinned to the same physical device
 # across runs, regardless of the (unstable) order get_device_list() returns.
 #
-# TODO: replace the placeholder serial numbers below with your real ones.
-#       You can find them printed at startup (this script logs every detected
-#       serial) or via the ZED_Explorer tool.
+# The real serial->label map lives in a camera_roles.json deployed next to
+# this script (gitignored — full serials stay out of the public repo, see
+# docs/identifiers.md rule 4), e.g. {"12345678": "cam1", "87654321": "cam2"}.
+# Serials are printed at startup and shown in the ZED_Explorer tool.
 CAMERA_LABELS = {
-    # <serial_number>: "<label>",
+    # <serial_number>: "<label>",  — placeholders; overridden by camera_roles.json
     111111111: "cam1",
     222222222: "cam2",
 }
+
+_ROLES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera_roles.json")
+if os.path.exists(_ROLES_PATH):
+    with open(_ROLES_PATH) as _f:
+        CAMERA_LABELS.update({int(k): str(v) for k, v in json.load(_f).items()})
 
 def label_for(serial):
     """Return the stable label for a serial, or a safe serial-based fallback."""

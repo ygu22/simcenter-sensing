@@ -31,6 +31,14 @@ replay_fusion_enhanced.py   →  fused_bodies.csv  (3D kinematics + arm angles)
 (`SVO_FILES`, `FUSION_CONF`, `OUT_CSV`, depth/body model selection, etc.).
 Edit these for each session.
 
+`multiCameraRecord.py` maps camera serials to stable labels (`cam1`/`cam2`)
+via a `camera_roles.json` deployed next to it, e.g.
+`{"12345678": "cam1", "87654321": "cam2"}`. The real file contains full
+serials, so it is **not committed** — it lives in `STAGING/cv/` and gets
+copied to the ZedBox alongside this script (see
+[docs/identifiers.md](../../../docs/identifiers.md), rule 4). Without it,
+unmapped cameras still record safely as `cam-SN<serial>_*.svo2`.
+
 ## TODOs
 
 <!-- TODO(unassigned): Pull config into a YAML/JSON file or CLI args so the script isn't edited per-run -->

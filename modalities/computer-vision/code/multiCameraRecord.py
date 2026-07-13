@@ -36,6 +36,12 @@ def on_sigint(sig, frame):
     global STOP; STOP = True
 signal.signal(signal.SIGINT, on_sigint)
 
+# Fusion needs every camera's data, so one camera dying mid-session makes the
+# rest of the recording useless on its own. ~3s of consecutive grab failures
+# (rather than a single blip) trips this, then all cameras stop together
+# instead of one camera silently recording alone for the rest of the session.
+MAX_CONSECUTIVE_GRAB_FAILURES = 90
+
 def open_camera(serial, fps=30):
     # Opening a ZED camera is NOT safe to race across threads — the first
     # open() in a process does GPU/CUDA context init, and opening multiple
@@ -54,7 +60,7 @@ def open_camera(serial, fps=30):
     return cam, err
 
 def record_one(cam, serial, label, out_dir, session_stamp):
-    os.makedirs(out_dir, exist_ok=True)
+    global STOP
     # Filename: <label>_<date>_<time>.svo2  e.g. cam1_2026-07-01_14-32-05.svo2
     # - label ("cam1"/"cam2") separates the cameras
     # - the shared session date+time stamp prevents overwriting prior videos
@@ -63,10 +69,13 @@ def record_one(cam, serial, label, out_dir, session_stamp):
     out_path = os.path.join(out_dir, fname)
     rec = sl.RecordingParameters(out_path, sl.SVO_COMPRESSION_MODE.H265)
     if cam.enable_recording(rec) != sl.ERROR_CODE.SUCCESS:
-        print(f"[{serial}] enable_recording failed"); cam.close(); return
+        print(f"[{serial}] ({label}) enable_recording failed"); cam.close()
+        STOP = True  # this camera never started; the rest of the rig alone isn't useful for fusion
+        return
     print(f"[{serial}] ({label}) recording to {out_path}")
 
     rt = sl.RuntimeParameters()
+    consecutive_failures = 0
     try:
         while not STOP:
             # The Python SDK only writes a frame when grab() returns SUCCESS.
@@ -74,8 +83,15 @@ def record_one(cam, serial, label, out_dir, session_stamp):
             # spinning the CPU as fast as possible.
             err = cam.grab(rt)
             if err != sl.ERROR_CODE.SUCCESS:
-                print(f"[{serial}] ({label}) grab failed: {err}")
+                consecutive_failures += 1
+                print(f"[{serial}] ({label}) grab failed: {err} ({consecutive_failures} in a row)")
+                if consecutive_failures >= MAX_CONSECUTIVE_GRAB_FAILURES:
+                    print(f"[{serial}] ({label}) too many consecutive grab failures — stopping all cameras.")
+                    STOP = True
+                    break
                 time.sleep(0.005)  # brief backoff to avoid a busy-spin on repeated failures
+            else:
+                consecutive_failures = 0
     finally:
         cam.disable_recording(); cam.close()
         print(f"[{serial}] ({label}) stopped")

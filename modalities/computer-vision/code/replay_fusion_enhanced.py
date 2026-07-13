@@ -28,6 +28,9 @@ from projection_helpers import (
     load_extrinsics_from_fusion_conf, intrinsics_from_caminfo,
     invert_se3, project_point
 )
+from arm_joint_angles import (
+    compute_arm_angles, csv_angle_columns, get_arm_indices, AngleSmoother
+)
 
 # -------------------- USER CONFIG --------------------
 SVO_FILES = [
@@ -46,6 +49,11 @@ BODY_FORMAT = sl.BODY_FORMAT.BODY_34  # BODY_38 if you need extra extremities
 KINEMATICS_ENABLED   = True
 VEL_ACC_WINDOW       = 2      # use 2-frame window for finite difference (previous/current)
 MAX_HISTORY          = 5      # per person history for smoothing/robustness
+
+# Arm joint angles (elbow + shoulder), computed from the fused 3D skeleton
+ARM_ANGLES_ENABLED   = True
+ARM_CONF_THRESHOLD   = 0.0    # drop joints below this per-keypoint confidence (fused conf scale)
+ARM_SMOOTH_WINDOW    = 0      # >1 enables temporal smoothing of the angle streams
 
 # Head crops & gaze
 SAVE_HEAD_CROPS      = True
@@ -182,6 +190,8 @@ def write_csv_header(writer, kp_count):
             cols += [f"k{i}_vx","k{i}_vy","k{i}_vz",
                      f"k{i}_ax","k{i}_ay","k{i}_az"]
     cols += ["head_x","head_y","head_z","gaze_dx","gaze_dy","gaze_dz"]
+    if ARM_ANGLES_ENABLED:
+        cols += csv_angle_columns()
     writer.writerow(cols)
 
 def compute_vel_acc(prev_pts, prev_t, pts, t, prev_vel=None):
@@ -328,6 +338,10 @@ def main():
     # 4) CSV setup
     kp_count = 34 if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else 38
     bf_str   = "BODY_34" if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38"
+    # Arm-angle setup: resolve joint indices once and (optionally) build a smoother.
+    arm_idx      = get_arm_indices(bf_str) if ARM_ANGLES_ENABLED else None
+    arm_cols     = csv_angle_columns() if ARM_ANGLES_ENABLED else []
+    arm_smoother = AngleSmoother(ARM_SMOOTH_WINDOW) if (ARM_ANGLES_ENABLED and ARM_SMOOTH_WINDOW > 1) else None
     csvf = open(OUT_CSV, "w", newline="")
     writer = csv.writer(csvf)
     write_csv_header(writer, kp_count)
@@ -417,6 +431,18 @@ def main():
                                     float(gaze_dir[0]), float(gaze_dir[1]), float(gaze_dir[2])])
                     else:
                         row.extend([float("nan")] * 6)
+
+                    # Arm joint angles from THIS body's fused 3D keypoints.
+                    if ARM_ANGLES_ENABLED:
+                        conf = getattr(b, "keypoint_confidence", None)
+                        angles = compute_arm_angles(
+                            kp, body_format=bf_str, confidences=conf,
+                            conf_threshold=ARM_CONF_THRESHOLD, indices=arm_idx,
+                        )
+                        if arm_smoother is not None:
+                            angles = arm_smoother.update(pid, angles)
+                        row.extend(angles[c] for c in arm_cols)
+
                     writer.writerow(row)
 
             # Head crops: save an upper-body/"head-ish" crop per local detection.
@@ -520,6 +546,8 @@ def main():
             pass
         csvf.flush(); csvf.close()
         print(f"[OK] CSV written to {OUT_CSV}")
+        if ARM_ANGLES_ENABLED:
+            print(f"[OK] Arm joint angles appended ({len(arm_cols)} columns)")
         if WRITE_DEMO_VIDEOS:
             print(f"[OK] Videos in {VIDEO_DIR}")
         if SAVE_HEAD_CROPS:

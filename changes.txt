@@ -6,6 +6,89 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-13 — Arm joint angles from the fused 3D skeleton
+New file: modalities/computer-vision/code/arm_joint_angles.py
+Edited:   modalities/computer-vision/code/replay_fusion_enhanced.py
+========================================================================
+
+GOAL
+----
+After the two SVO2 recordings are fused into a single 3D skeleton (the
+"hybridized image"), compute upper-limb (arm) joint angles per person per
+frame, at research quality: robust to missing/low-confidence joints, invariant
+to the world coordinate convention, and validated.
+
+NEW MODULE: arm_joint_angles.py
+-------------------------------
+Computes both arms' angles from a single skeleton's 3D WORLD keypoints.
+
+  Method
+  - Builds a subject-anchored anatomical trunk frame from the shoulders and
+    hips (e_sup = up, e_right = subject's right, e_ant = forward = e_sup x
+    e_right). Because the frame is derived from the body itself, results do NOT
+    depend on the world axis convention (RIGHT_HANDED_Z_UP or otherwise).
+  - Elbow: clinical flexion (0 deg = straight, increasing as it bends) plus the
+    raw included segment angle for transparency.
+  - Shoulder: ISB-style, gimbal-free decomposition:
+      * elevation angle  (0 = arm down, 90 = horizontal, 180 = straight up)
+      * plane of elevation (0 = forward flexion, +90 = lateral abduction,
+        +/-180 = extension), side-symmetric so left/right compare directly.
+    Also emits the classic planar shoulder_flexion / shoulder_abduction for
+    convenience (clearly documented as degenerate under combined motions).
+  - QA: per-segment lengths (upperarm_len_m, forearm_len_m) and a per-arm
+    `quality` flag: ok / low_confidence / missing_joints / degenerate_trunk /
+    degenerate_segment. Uncomputable angles are NaN, never fabricated.
+
+  Robustness
+  - Joint indices resolved from the live ZED SDK enum (sl.BODY_34_PARTS /
+    BODY_38_PARTS) when pyzed is present; documented fallback constants for the
+    BODY_34 and BODY_38 layouts otherwise (so the module also runs offline on a
+    machine without the SDK). NOTE: these arm indices intentionally do NOT reuse
+    gaze_geometry.py's head/eye indices, which that file itself marks "verify".
+  - Non-finite coordinates and (optional) per-keypoint confidence gating are
+    handled; supports both BODY_34 and BODY_38.
+  - Optional temporal smoothing (AngleSmoother): moving MEDIAN for linear
+    angles, circular mean for the wrap-around plane-of-elevation angle.
+
+  Two ways to run
+  1) In-pipeline: replay_fusion_enhanced.py imports compute_arm_angles and
+     appends angle columns to each fused-body CSV row (see below).
+  2) Offline: `python arm_joint_angles.py fused_bodies.csv out.csv
+     [--smooth-window N]` reads an existing fused CSV, reconstructs keypoints
+     from the k{i}_x/y/z columns, and writes a copy with the angle columns
+     appended. Body format auto-detected from the keypoint count.
+
+  Validation (run on Anaconda Python; numpy only)
+  - `python arm_joint_angles.py --selftest` builds synthetic poses with known
+    ground truth and PASSES all: elbow 0/90 deg, shoulder elevation 90 deg with
+    plane 0 (forward) vs +90 (abduction), and graceful NaN + "missing_joints"
+    when a joint is absent.
+  - The offline annotate_csv path was exercised on a synthetic fused CSV and
+    produced the expected left-arm angles with correct quality flags.
+
+INTEGRATION INTO replay_fusion_enhanced.py
+------------------------------------------
+- Import compute_arm_angles / csv_angle_columns / get_arm_indices / AngleSmoother.
+- New config block: ARM_ANGLES_ENABLED (default True), ARM_CONF_THRESHOLD,
+  ARM_SMOOTH_WINDOW.
+- write_csv_header() appends csv_angle_columns() when enabled.
+- main() resolves arm indices once (arm_idx) and optionally builds a smoother.
+- In the single fused-body loop, angles are computed from that body's fused 3D
+  keypoints (using keypoint_confidence when available) and appended to the row,
+  so every angle column stays matched to the same person as its keypoints.
+- Final status line reports how many angle columns were written.
+
+NOTES / FOLLOW-UP
+-----------------
+- Angles are derived from the FUSED 3D skeleton, so their accuracy inherits the
+  fusion calibration quality (see issue F in the 2026-07-01 entry re: verifying
+  the extrinsics frame). Segment-length QA columns help spot bad tracking.
+- To sanity-check on your real recordings: run the fusion script to produce
+  fused_bodies.csv, then eyeball the *_len_m columns for stability and confirm
+  elbow_flexion ~0 when arms hang straight in a calibration frame.
+
+
+========================================================================
 2026-07-01 — Hybrid 3D (Fusion) pipeline review + fixes
 Files: modalities/computer-vision/code/replay_fusion_enhanced.py
        (helpers reviewed: gaze_geometry.py, projection_helpers.py)

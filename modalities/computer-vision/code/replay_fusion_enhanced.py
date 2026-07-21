@@ -269,14 +269,19 @@ def annotate_gaze(frame_bgra, origin_px, gaze_cam_dir, scale_px=80, color=(0,0,2
     cv2.arrowedLine(frame_bgra, (ox,oy), (ex,ey), color, 2, tipLength=0.2)
     return frame_bgra
 
-def main():
-    os.makedirs(os.path.dirname(OUT_CSV), exist_ok=True)
-    if SAVE_HEAD_CROPS: os.makedirs(HEAD_CROP_DIR, exist_ok=True)
-    if WRITE_DEMO_VIDEOS: os.makedirs(VIDEO_DIR, exist_ok=True)
+def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_dir=None):
+    """Run fusion + angle processing for one cam1/cam2 SVO2 pair. Everything
+    that's fixed dataset-wide (body model, depth mode, angle/video toggles,
+    etc.) stays a module-level constant above; only the per-session paths
+    are parameters, so batch_process_sessions.py can call this in a loop
+    without touching the USER CONFIG block."""
+    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    if SAVE_HEAD_CROPS: os.makedirs(head_crop_dir, exist_ok=True)
+    if WRITE_DEMO_VIDEOS: os.makedirs(video_dir, exist_ok=True)
 
     # 1) Open clients, enable BT + publishers
     clients = []
-    for p in SVO_FILES:
+    for p in svo_files:
         cam = open_client_from_svo(p, DEPTH_MODE)
         if cam is None: 
             print("Failed to open:", p); return 1
@@ -298,7 +303,7 @@ def main():
         K_map.update(intrinsics_from_caminfo(i))
 
     # Load world_T_cam from fusion calibration file
-    Twc_map = load_extrinsics_from_fusion_conf(FUSION_CONF)
+    Twc_map = load_extrinsics_from_fusion_conf(fusion_conf)
     # Precompute cam_T_world for quick projection
     Tcw_map = {}
     for sn in serials:
@@ -320,7 +325,7 @@ def main():
 
             # robust choice on Jetson:
             fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-            out_path = os.path.join(VIDEO_DIR, f"demo_cam{idx+1}.avi")
+            out_path = os.path.join(video_dir, f"demo_cam{idx+1}.avi")
             w = cv2.VideoWriter(out_path, fourcc, fps, (out_w, out_h))
             writers[idx] = w
             if not w.isOpened():
@@ -342,7 +347,7 @@ def main():
     arm_idx      = get_arm_indices(bf_str) if ARM_ANGLES_ENABLED else None
     arm_cols     = csv_angle_columns() if ARM_ANGLES_ENABLED else []
     arm_smoother = AngleSmoother(ARM_SMOOTH_WINDOW) if (ARM_ANGLES_ENABLED and ARM_SMOOTH_WINDOW > 1) else None
-    csvf = open(OUT_CSV, "w", newline="")
+    csvf = open(out_csv, "w", newline="")
     writer = csv.writer(csvf)
     write_csv_header(writer, kp_count)
 
@@ -456,7 +461,7 @@ def main():
                         if crop is None:
                             continue
                         crop_path = os.path.join(
-                            HEAD_CROP_DIR, f"cam{i+1}_pid{body.id}_{frame_idx:06d}.png"
+                            head_crop_dir, f"cam{i+1}_pid{body.id}_{frame_idx:06d}.png"
                         )
                         cv2.imwrite(crop_path, crop)
 
@@ -518,7 +523,7 @@ def main():
                     else:
                         # fall back: save a few debug PNGs so you can see what we’re producing
                         if frame_idx < 5:
-                            dbg = os.path.join(VIDEO_DIR, f"dbg_cam{i+1}_{frame_idx:04d}.png")
+                            dbg = os.path.join(video_dir, f"dbg_cam{i+1}_{frame_idx:04d}.png")
                             cv2.imwrite(dbg, frame_bgr)
                             print(f"[VIDEO][cam{i+1}] Writer not open; wrote debug {dbg}")
             frame_idx += 1
@@ -545,13 +550,20 @@ def main():
         except Exception:
             pass
         csvf.flush(); csvf.close()
-        print(f"[OK] CSV written to {OUT_CSV}")
+        print(f"[OK] CSV written to {out_csv}")
         if ARM_ANGLES_ENABLED:
             print(f"[OK] Arm joint angles appended ({len(arm_cols)} columns)")
         if WRITE_DEMO_VIDEOS:
-            print(f"[OK] Videos in {VIDEO_DIR}")
+            print(f"[OK] Videos in {video_dir}")
         if SAVE_HEAD_CROPS:
-            print(f"[OK] Head crops in {HEAD_CROP_DIR}")
+            print(f"[OK] Head crops in {head_crop_dir}")
+    return 0
+
+def main():
+    # Single-run entry point using the USER CONFIG paths above. For a whole
+    # dataset of sessions, use batch_process_sessions.py instead, which
+    # calls process_session() once per cam1/cam2 pair it finds.
+    return process_session(SVO_FILES, FUSION_CONF, OUT_CSV, HEAD_CROP_DIR, VIDEO_DIR)
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -156,6 +156,21 @@ angle traces: `arm_joint_angles.py --smooth-window 5` as a starting point
 (compressions at 2 Hz sampled at 30 fps tolerate a 5-frame window without
 flattening peaks).
 
+**Processing more than one session at a time** — once several sessions have
+accumulated in the recordings directory, use
+[`batch_process_sessions.py`](code/README.md) instead of running
+`replay_fusion_enhanced.py` by hand per session:
+```bash
+python batch_process_sessions.py \
+    --recordings-dir ~/zed_rec \
+    --fusion-conf ~/zed_rec/fusion_calibration.json \
+    --out-dir ~/cpr_dataset
+```
+It finds every `cam1`/`cam2` pair, writes each session's `fused_bodies.csv`
+to its own subfolder under `--out-dir`, and skips sessions it's already
+processed (`--force` to reprocess). Still apply the Phase 2 QA gates to each
+session's output before folding it into the dataset.
+
 ---
 
 ## Run-sheet fields (this protocol)

@@ -167,6 +167,7 @@ any technique deviations observed (bent elbows, side switch, interruptions).
 
 ## Related
 
+- Field checklist for actually running a session: [pilot-session-checklist.md](pilot-session-checklist.md)
 - General arm-kinematics runbook: [session-protocol.md](session-protocol.md)
 - Angle definitions and schema: [data-spec.md](data-spec.md#arm-joint-angles)
 - Angle math: [code/arm_joint_angles.py](code/arm_joint_angles.py) (`--selftest`)

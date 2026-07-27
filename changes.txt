@@ -6,6 +6,37 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-27 — Fusion calibration loader now reads real ZED360 format
+File: modalities/computer-vision/code/projection_helpers.py
+========================================================================
+
+PROBLEM (found against a real calibration file, D:\zedrec\L&D_07-23-26.json)
+  load_extrinsics_from_fusion_conf() only parsed a hand-authored schema
+  ({"cameras":[{"pose":{"rotation","translation"}}]}). The file ZED360 actually
+  writes is a dict keyed by serial number, each with a "FusionConfiguration"
+  whose "pose" is a flat string of 16 whitespace-separated floats (row-major
+  4x4). Against the real file the old parser matched nothing and returned an
+  empty map -> the pipeline would fall back to identity camera poses and fuse
+  the two cameras incorrectly (silently wrong 3D).
+
+FIX
+  - Added parsing for the ZED360 serial-keyed / FusionConfiguration layout,
+    including a helper _twc_from_pose_string() that turns the 16-float pose
+    string (or a numeric 16-sequence) into a 4x4 world_T_cam.
+  - Kept the original list layout as a fallback for compatibility.
+
+VALIDATION (pure JSON/numpy on this laptop; no ZED SDK required)
+  Parsed D:\zedrec\L&D_07-23-26.json (serials 44429816, 45817796):
+    - both cameras parsed; rotation blocks orthonormal with det = +1
+    - invert_se3(Twc) @ Twc == I (round-trips)
+    - camera-to-camera baseline ~2.55 m (sensible for the room setup)
+
+NOTE
+  This unblocks correct fusion once the ZED SDK is installed to run the
+  body-tracking/fusion pipeline on the SVO2 recordings.
+
+
+========================================================================
 2026-07-13 — Session protocol + PI summary + doc refresh
 Files: modalities/computer-vision/session-protocol.md   (new)
        modalities/computer-vision/pi-summary.md          (new)

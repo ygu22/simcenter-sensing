@@ -6,6 +6,59 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-27 — Port fusion pipeline to the installed ZED SDK 5.4 API
+File: modalities/computer-vision/code/replay_fusion_enhanced.py
+========================================================================
+
+CONTEXT
+  First real run of the pipeline (ZED SDK 5.4 + pyzed 5.4.1, RTX 5060) against
+  the 2026-07-23 sample. The fusion code had been written against an older SDK
+  API and failed at runtime. Fixed each mismatch as it surfaced; the pipeline
+  now runs end to end and produces fused_bodies.csv with arm angles.
+
+FIXES (all verified against SDK 5.4)
+  1. FUSION_ERROR_CODE vs ERROR_CODE: Fusion methods return the distinct
+     FUSION_ERROR_CODE enum. Comparing fusion.init()'s result to
+     ERROR_CODE.SUCCESS was always "not equal", so init falsely reported
+     "init failed: SUCCESS". Now compared against FUSION_ERROR_CODE.SUCCESS
+     (init, subscribe, enable_body_tracking).
+  2. add_camera() -> subscribe(): the 5.4 API is
+     fusion.subscribe(CameraIdentifier, CommunicationParameters, Transform pose).
+     Rewrote add_inputs_to_fusion() to build a CameraIdentifier (serial),
+     shared-memory comm params, and a world pose Transform. Added helper
+     _transform_from_matrix() (fills sl.Matrix4f from the 4x4 world_T_cam;
+     identity when no calibration).
+  3. enable_body_tracking_fusion() -> enable_body_tracking(); and it MUST be
+     called AFTER subscribe (else "WRONG BODY FORMAT", since Fusion resolves the
+     senders' body format at enable time). Split init_fusion() so process_session
+     now runs init -> subscribe -> enable in that order.
+  4. grab(FusionRuntimeParameters) -> process(): sl.FusionRuntimeParameters
+     does not exist in 5.4; fusion.process() takes no args. retrieve_bodies now
+     requires a BodyTrackingFusionRuntimeParameters, so we pass one.
+  5. disable_body_tracking_fusion() -> disable_body_tracking().
+  6. int(b.tracking_state) crashed: tracking_state is an OBJECT_TRACKING_STATE
+     enum in 5.4. Now take .value (with a numeric fallback).
+
+FIRST-RUN RESULT (2026-07-23 sample, PERFORMANCE depth for speed)
+  - 215 fused frames over ~8.0 s; fused_bodies.csv written with 18 arm-angle
+    columns; demo videos + head crops produced.
+  - Arm-angle quality 100% "ok" for both arms; segment lengths stable
+    (upper arm ~0.28 m std ~0.01, forearm ~0.27 m std ~0.01) -> clean tracking.
+  - Angles physically plausible (elbow flexion 0-75 deg, shoulder elevation
+    17-64 deg), and left-elbow reaching ~0 deg when relaxed is a good sanity
+    check on the anatomical-frame math.
+  - NOTE: two people were tracked (person_id 0 and 1, ~3.56 m apart, both high
+    confidence) -> the clip contains the trainee plus a second person. For
+    single-subject analysis, select the trainee's person_id.
+
+FOLLOW-UP
+  - PERFORMANCE depth is deprecated in 5.4; final/accurate passes should use
+    NEURAL (one-time model optimization).
+  - Consider whether HUMAN_BODY model / BODY_FORMAT should change for the final
+    dataset.
+
+
+========================================================================
 2026-07-27 — Fusion calibration loader now reads real ZED360 format
 File: modalities/computer-vision/code/projection_helpers.py
 ========================================================================

@@ -133,51 +133,68 @@ def enable_bt_and_publish(cam: sl.Camera):
 
 # --- replace your init_fusion(...) and camera-registration bits with this ---
 
+def _transform_from_matrix(Twc):
+    """Build an sl.Transform from a 4x4 numpy world_T_cam (identity if None)."""
+    T = sl.Transform()
+    if Twc is None:
+        T.set_identity()
+        return T
+    m4 = sl.Matrix4f()
+    for r in range(4):
+        for c in range(4):
+            m4[r, c] = float(Twc[r, c])
+    T.init_matrix(m4)
+    return T
+
 def init_fusion():
     fusion = sl.Fusion()
     fparams = sl.InitFusionParameters()
     fparams.coordinate_units  = sl.UNIT.METER
     fparams.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP
 
+    # Fusion methods return FUSION_ERROR_CODE (a distinct enum from ERROR_CODE).
     err = fusion.init(fparams)
-    if err != sl.ERROR_CODE.SUCCESS:
+    if err != sl.FUSION_ERROR_CODE.SUCCESS:
         print("[FUSION] init failed:", err)
         return None
     else:
         print("[FUSION] init SUCCESS")
+    return fusion
 
+def enable_fusion_body_tracking(fusion):
+    """Enable body-tracking fusion. MUST be called AFTER the cameras are
+    subscribed, so Fusion can resolve the senders' body format (otherwise it
+    returns WRONG BODY FORMAT)."""
     bt = sl.BodyTrackingFusionParameters()
     bt.enable_tracking = True
     bt.enable_body_fitting = True
-    fusion.enable_body_tracking_fusion(bt)
-    return fusion
+    err = fusion.enable_body_tracking(bt)
+    if err != sl.FUSION_ERROR_CODE.SUCCESS:
+        print("[FUSION] enable_body_tracking failed:", err)
+        return False
+    return True
 
 def add_inputs_to_fusion(fusion, serials, Twc_map):
     """
-    Register each camera with Fusion, using shared memory transport.
-    Apply extrinsics (world_T_cam) if available.
+    Register (subscribe) each publishing camera with Fusion over shared memory,
+    supplying its world pose (world_T_cam) from the calibration when available.
     """
     for sn in serials:
-        ip = sl.InputFusionParameters()
-        # identify the input by serial so Fusion can match it to the publisher
-        ip.set_from_serial_number(sn)
+        # identify the sender by serial so Fusion matches it to the publisher
+        uuid = sl.CameraIdentifier()
+        uuid.serial_number = sn
 
-        # transport: shared memory on same host
+        # transport: shared memory on the same host
         rx = sl.CommunicationParameters()
         rx.set_for_shared_memory()
-        ip.set_comm_params(rx)
 
-        # apply pose if you have it
+        # camera world pose (identity if we have no calibration for this serial)
         Twc = Twc_map.get(sn, None)
-        if Twc is not None:
-            # Convert 4x4 to sl.Transform
-            T = sl.Transform()
-            T.init_matrix(Twc.flatten().tolist())
-            ip.set_world_pose(T)   # name may be set_world_pose / set_initial_world_transform depending on SDK minor version
+        pose = _transform_from_matrix(Twc)
 
-        err = fusion.add_camera(ip)
-        if err != sl.ERROR_CODE.SUCCESS:
-            print(f"[FUSION] add_camera({sn}) failed:", err)
+        err = fusion.subscribe(uuid, rx, pose)
+        if err != sl.FUSION_ERROR_CODE.SUCCESS:
+            print(f"[FUSION] subscribe({sn}) failed:", err)
             return False
     return True
 
@@ -333,13 +350,16 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
             else:
                 print(f"[VIDEO][cam{idx+1}] Writing {out_path} @ {fps} FPS, size=({out_w},{out_h})")
 
-    # 3) Fusion init
+    # 3) Fusion init -> subscribe cameras -> enable body tracking (order matters)
     fusion = init_fusion()
     if fusion is None: return 1
     # Register each camera with Fusion (shared memory transport + optional world pose)
     if not add_inputs_to_fusion(fusion, serials, Twc_map):
         return 1
-    
+    # Enable body-tracking fusion only after senders are subscribed.
+    if not enable_fusion_body_tracking(fusion):
+        return 1
+
     # 4) CSV setup
     kp_count = 34 if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else 38
     bf_str   = "BODY_34" if BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38"
@@ -362,7 +382,7 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
     gaze = GazeEstimator()
 
     # 5) Playback loop
-    rt_f = sl.FusionRuntimeParameters()
+    body_fusion_rt = sl.BodyTrackingFusionRuntimeParameters()
     active = True
     frame_idx = 0
     try:
@@ -391,13 +411,13 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
 
             # Reset the per-frame head/gaze map up front so the demo-video block
             # below always sees a defined value, even on frames with no fused
-            # bodies or when fusion.grab() did not return SUCCESS.
+            # bodies or when fusion.process() did not return SUCCESS.
             fused_head_gaze = {}   # pid -> (head_world(3,), gaze_dir_world(3,))
 
-            # Now grab fusion
-            if fusion.grab(rt_f) == sl.ERROR_CODE.SUCCESS:
+            # Ingest the latest published frames and retrieve the fused bodies.
+            if fusion.process() == sl.FUSION_ERROR_CODE.SUCCESS:
                 fused = sl.Bodies()
-                fusion.retrieve_bodies(fused)
+                fusion.retrieve_bodies(fused, body_fusion_rt)
                 ts_ns = fused.timestamp.get_nanoseconds()
 
                 # One pass per fused body. Every column in `row` — keypoints,
@@ -408,7 +428,10 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
                 for b in fused.body_list:
                     pid = b.id
                     kp = np.asarray(b.keypoint, dtype=np.float32)  # (K,3) WORLD
-                    row = [ts_ns, pid, float(b.confidence), int(b.tracking_state)]
+                    # tracking_state is an OBJECT_TRACKING_STATE enum in SDK 5.x;
+                    # take .value (fall back to the raw value if already numeric).
+                    ts_state = getattr(b.tracking_state, "value", b.tracking_state)
+                    row = [ts_ns, pid, float(b.confidence), int(ts_state)]
                     for p in kp:
                         row.extend([float(p[0]), float(p[1]), float(p[2])])
 
@@ -545,7 +568,7 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
                 pass
         # fusion
         try:
-            fusion.disable_body_tracking_fusion()
+            fusion.disable_body_tracking()
             fusion.close()
         except Exception:
             pass

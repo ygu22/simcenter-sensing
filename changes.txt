@@ -6,6 +6,70 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-27 — Coordinate-system mismatch split one person into several tracks
+Files: modalities/computer-vision/code/replay_fusion_enhanced.py
+       modalities/computer-vision/data-spec.md
+========================================================================
+
+SYMPTOM
+  The first successful run of the 2026-07-23 sample produced TWO fused people
+  (person_id 0 and 1, 215 frames each, both high confidence, mean head
+  positions 3.56 m apart). Reviewing demo_cam1.avi showed only ONE person was
+  actually in the room. So Fusion was not merging the two cameras' views of
+  the same subject -- it was emitting one track per camera.
+
+DIAGNOSIS
+  Aligning one track's skeleton onto the other's (rigid Procrustes, rotation +
+  translation, no scale) left only ~5.7 cm mean residual but required a ~90 deg
+  rotation. Near-identical limb geometry + a large pure rotation = the SAME body
+  reconstructed into two different world frames. That is the signature of a
+  coordinate-frame mismatch between the ZED360 calibration extrinsics and the
+  COORDINATE_SYSTEM the clients/Fusion were initialized with (RIGHT_HANDED_Z_UP).
+
+EXPERIMENT (sweep of 6 conventions, same SVOs + same calibration)
+  candidate                  persons  frames/person        sep(m)  resid(cm)  rot(deg)
+  RIGHT_HANDED_Z_UP                3  63 / 211 / 204        5.949        5.7      89.5
+  RIGHT_HANDED_Y_UP                3  63 / 211 / 204        6.276        5.7     132.2
+  LEFT_HANDED_Z_UP                 3  63 / 211 / 204        6.983        5.7      80.0
+  RIGHT_HANDED_Z_UP_X_FWD          2  215 / 215             4.727        6.7      75.7
+  LEFT_HANDED_Y_UP                 1  215                       -          -         -
+  IMAGE                            1  215                       -          -         -
+
+  Only LEFT_HANDED_Y_UP and IMAGE merged the subject into a single person_id
+  with full 215/215-frame coverage.
+
+FIX
+  - Added a single COORD_SYSTEM constant, applied to BOTH the per-camera client
+    init and Fusion init, so the two can no longer drift apart (previously the
+    value was hard-coded separately in each place).
+  - Set COORD_SYSTEM = sl.COORDINATE_SYSTEM.IMAGE.
+
+WHY IMAGE AND NOT LEFT_HANDED_Y_UP (both merged correctly)
+  IMAGE (X right, Y down, Z forward) is RIGHT-handed. LEFT_HANDED_Y_UP is
+  left-handed, which would silently flip the sign of the forward/backward and
+  left/right axes produced by the cross products in arm_joint_angles.py's
+  anatomical frame -- shoulder plane-of-elevation and abduction would come out
+  mirrored, with no error raised. IMAGE gives the same correct merge without
+  perturbing the angle math. (The angle module is invariant across right-handed
+  world frames by design: it builds its frame from the subject's own shoulders
+  and hips.)
+
+VALIDATION SO FAR
+  - fused_IMAGE.csv: 1 person, 215/215 frames, 18 arm-angle columns written.
+  - Physical sanity: head sits clearly above pelvis in the IMAGE output.
+  - NOT YET DONE: full production re-run (videos + head crops) and re-analysis
+    of the arm angles on the corrected single-person data. The external drive
+    (D:) holding the SVO2s, the calibration and all outputs was disconnected
+    before that re-run finished. Reconnect D: and re-run to complete this.
+
+IMPORTANT CONSEQUENCE
+  Every arm-angle number reported from the earlier RIGHT_HANDED_Z_UP run is
+  SUSPECT and should not be shown to anyone: those rows describe a subject
+  reconstructed in the wrong world frame, and the "two people" in that output
+  were one person counted twice. Re-run before using any of it.
+
+
+========================================================================
 2026-07-27 — Port fusion pipeline to the installed ZED SDK 5.4 API
 File: modalities/computer-vision/code/replay_fusion_enhanced.py
 ========================================================================

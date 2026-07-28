@@ -63,7 +63,14 @@ fails (see `quality` flag values in `gaze_geometry.py`), and `NaN` for any arm
 angle that could not be computed (with the reason in the per-arm `quality`
 column).
 
-Coordinate system: `RIGHT_HANDED_Z_UP` (set in `init_fusion()`).
+Coordinate system: set by the `COORD_SYSTEM` constant in
+`replay_fusion_enhanced.py` (currently `IMAGE`: X right, Y down, Z forward —
+right-handed), applied identically to every camera client and to Fusion. This
+**must** match the frame the ZED360 `fusion_calibration.json` extrinsics were
+expressed in; a mismatch makes Fusion emit one person as several `person_id`s.
+See changes.txt (2026-07-27, coordinate-system mismatch) for the sweep that
+determined this. Arm angles are unaffected by the choice of right-handed world
+frame — `arm_joint_angles.py` builds a subject-anchored anatomical frame.
 
 ### `demo_camN.avi`
 

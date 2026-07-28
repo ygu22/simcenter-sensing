@@ -45,6 +45,23 @@ DEPTH_MODE  = sl.DEPTH_MODE.NEURAL     # ULTRA/NEURAL for accuracy; PERFORMANCE 
 BODY_MODEL  = sl.BODY_TRACKING_MODEL.HUMAN_BODY_MEDIUM  # FAST/MEDIUM/ACCURATE
 BODY_FORMAT = sl.BODY_FORMAT.BODY_34  # BODY_38 if you need extra extremities
 
+# World coordinate convention. MUST match whatever frame the fusion_calibration
+# extrinsics (ZED360 output) were expressed in, and MUST be identical between
+# every camera client and Fusion itself -- if it's wrong, each camera's local
+# skeleton lands in a different (wrong) part of world space and Fusion creates
+# a separate person track per camera instead of merging them into one.
+#
+# IMAGE was determined empirically (2026-07-27) against a real two-camera
+# recording + ZED360 calibration: it was the only RIGHT-HANDED convention
+# (of 6 tested) that merged both cameras' view of one real person into a
+# single fused person_id across the whole clip; every RIGHT_HANDED_*_UP
+# variant fragmented one person into 2-3 person_ids. LEFT_HANDED_Y_UP also
+# merged correctly, but is left-handed, which would silently flip the sign of
+# forward/backward and left/right in arm_joint_angles.py's cross-product-based
+# anatomical frame -- IMAGE avoids that without touching the angle math.
+# See changes.txt (2026-07-27, "coordinate-system mismatch") for the sweep.
+COORD_SYSTEM = sl.COORDINATE_SYSTEM.IMAGE
+
 # Kinematics
 KINEMATICS_ENABLED   = True
 VEL_ACC_WINDOW       = 2      # use 2-frame window for finite difference (previous/current)
@@ -93,9 +110,9 @@ def open_client_from_svo(svo_path, depth_mode=sl.DEPTH_MODE.NEURAL, fps=None):
     init.depth_mode = depth_mode
     init.svo_real_time_mode = False   # offline faster-than-real-time
     # Match the Fusion coordinate frame/units so published bodies line up with
-    # the fused world (Fusion is initialized RIGHT_HANDED_Z_UP / METER below).
+    # the fused world (Fusion is initialized with the same COORD_SYSTEM below).
     init.coordinate_units  = sl.UNIT.METER
-    init.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP
+    init.coordinate_system = COORD_SYSTEM
 
     if fps: init.camera_fps = fps
     err = cam.open(init)
@@ -150,7 +167,7 @@ def init_fusion():
     fusion = sl.Fusion()
     fparams = sl.InitFusionParameters()
     fparams.coordinate_units  = sl.UNIT.METER
-    fparams.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP
+    fparams.coordinate_system = COORD_SYSTEM
 
     # Fusion methods return FUSION_ERROR_CODE (a distinct enum from ERROR_CODE).
     err = fusion.init(fparams)

@@ -6,6 +6,46 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-28 — batch_process_sessions.py: first real run, provenance, QA gates
+File: modalities/computer-vision/code/batch_process_sessions.py
+========================================================================
+
+WHY
+  batch_process_sessions.py is the documented way to build the CPR dataset but
+  had never actually been executed. Its critical untested assumption was that
+  the ZED SDK survives opening/closing cameras and Fusion repeatedly WITHIN ONE
+  PROCESS -- if it did not, the failure would surface mid-dataset.
+
+TEST (real SVO2 data, not synthetic)
+  Built a fixture from the 2026-07-23 recording: two full cam1/cam2 sessions
+  under different stamps, plus one deliberately unpaired cam1 file.
+  Result: both sessions processed sequentially in one process, each producing
+  the same 1 person / 90% coverage as the standalone run; the unpaired file was
+  correctly skipped; exit 0. The multi-session path works as documented.
+
+GAPS FOUND AND FIXED (both matter for a dataset built over weeks)
+  1. NO PROVENANCE. A single --fusion-conf is applied to every session. Over a
+     multi-week dataset the rig will be recalibrated, and afterwards there was
+     no way to tell which calibration (or coordinate convention, depth mode,
+     body model, SDK version) produced a given CSV -- while a wrong frame
+     silently invalidates every angle in it.
+     -> Each session folder now gets session_meta.json recording the SVO paths,
+        the calibration path AND ITS SHA256 (so a swapped same-named file is
+        detectable), COORD_SYSTEM, depth mode, body model/format, and SDK
+        version.
+  2. NO QA GATE. Batch reported only pass/fail counts, so a session whose
+     subject fragmented into several tracks, or that contained phantom tracks,
+     would be folded into the dataset silently.
+     -> After each session, batch re-reads the CSV and checks person count
+        against --expect-people (default 1) and flags any track whose median
+        upper-arm length is outside 0.20-0.45 m as a probable phantom. Flagged
+        sessions are listed together at the end of the run.
+     Verified against the known-bad 2026-06-17 output: correctly reported
+     "3 person_id(s), expected 1" plus both phantoms (190 mm and 122 mm).
+
+
+
+========================================================================
 2026-07-27 (later still) — Phantom tracks; QA-tool corrections; 06-17 session
 Files: modalities/computer-vision/code/arm_joint_angles.py
        modalities/computer-vision/code/diagnose_fusion_frame.py

@@ -122,14 +122,21 @@ FIXES (all verified against SDK 5.4)
 FIRST-RUN RESULT (2026-07-23 sample, PERFORMANCE depth for speed)
   - 215 fused frames over ~8.0 s; fused_bodies.csv written with 18 arm-angle
     columns; demo videos + head crops produced.
-  - Arm-angle quality 100% "ok" for both arms; segment lengths stable
-    (upper arm ~0.28 m std ~0.01, forearm ~0.27 m std ~0.01) -> clean tracking.
-  - Angles physically plausible (elbow flexion 0-75 deg, shoulder elevation
-    17-64 deg), and left-elbow reaching ~0 deg when relaxed is a good sanity
-    check on the anatomical-frame math.
-  - NOTE: two people were tracked (person_id 0 and 1, ~3.56 m apart, both high
-    confidence) -> the clip contains the trainee plus a second person. For
-    single-subject analysis, select the trainee's person_id.
+  - The pipeline ran end to end: the SDK-5.4 port above is confirmed working.
+
+  !! RETRACTED (corrected 2026-07-27, later the same day) !!
+  This entry originally reported "arm-angle quality 100% ok", "segment lengths
+  stable", "angles physically plausible", and concluded that the two tracked
+  person_ids meant "the trainee plus a second person, select the trainee's id".
+  ALL OF THAT IS WRONG. Only ONE person was in the room: reviewing the demo
+  video showed a single subject, and the two tracks turned out to be that one
+  body reconstructed into two different world frames by a coordinate-system
+  mismatch. The quality flags and segment lengths looked healthy precisely
+  because the skeleton WAS well-formed -- it was merely placed in the wrong
+  frame, which those checks cannot see. Do not reuse any angle number from this
+  run. See the 2026-07-27 "coordinate-system mismatch" entry at the top of this
+  file for the diagnosis, the fix, and the guards added so a fragmented subject
+  can no longer pass silently.
 
 FOLLOW-UP
   - PERFORMANCE depth is deprecated in 5.4; final/accurate passes should use

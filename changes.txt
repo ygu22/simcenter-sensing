@@ -6,6 +6,57 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-27 (later) — CSV header bug; corrected run CONFIRMS the frame fix
+File: modalities/computer-vision/code/replay_fusion_enhanced.py
+========================================================================
+
+BUG: malformed CSV header (204 of 334 column names)
+  write_csv_header() built its column lists with the f prefix on only the FIRST
+  element of each list:
+      cols += [f"k{i}_x","k{i}_y","k{i}_z"]              # <-- 2nd and 3rd literal
+      cols += [f"k{i}_vx","k{i}_vy",...,f"k{i}_ax",...]  # <-- same
+  so the header emitted literal "k{i}_y" / "k{i}_z" / "k{i}_vy" etc, repeated
+  once per keypoint. The DATA rows were correct (written positionally), but the
+  file could not be addressed by column name -- pandas/DictReader see dozens of
+  duplicate "k{i}_y" columns. This also broke arm_joint_angles.annotate_csv on
+  real pipeline CSVs (it looks up f"k{i}_y" and raised KeyError 'k0_y'); the
+  module's own tests missed it because they generate a correct header.
+  FIX: f prefix on every element. Verified: 0 of 334 malformed after the fix.
+
+CORRECTED RUN (2026-07-23 sample, COORD_SYSTEM = IMAGE, PERFORMANCE depth)
+  [PEOPLE] 1 fused person_id over 225 frames; person 0 tracked in 207 frames
+  (92% coverage). Matches the video, which shows a single subject.
+
+  Independent confirmation that the frame fix is right -- segment-length
+  stability improved ~10x versus the broken RIGHT_HANDED_Z_UP run:
+      upper arm : std 13 mm (CV 4.6%)  ->  std 1 mm (CV 0.3%)
+      forearm   : std 12 mm (CV 4.4%)  ->  std 1 mm (CV 0.3%)
+  A rigid body should have constant limb lengths; near-zero variance is exactly
+  what a correctly-reconstructed skeleton looks like.
+
+  Arm-angle quality: 100% "ok" on both arms, 207/207 rows.
+  Duration 7.7 s. Ergonomic exposure: right shoulder elevation >45 deg for 100%
+  of tracked time, left for 5.3%; neither arm exceeded 60 deg.
+
+DATA-INTEGRITY PROBLEMS FOUND ON THE EXTERNAL DRIVE (D:)
+  1. D: reports OperationalStatus = "Full Repair Needed" (removable, label
+     ENFAIN). It should be repaired/replaced; do not keep sole copies there.
+  2. The two 2026-07-23 SVO2 files were ~122 MB each when first processed and
+     are now ~24 MB, with mtimes of 2026-07-27 12:41 / 12:46 -- i.e. the ZED
+     SDK's "Corruption detected in SVO file, attempting to auto-repair"
+     TRUNCATED THEM IN PLACE during the first run, discarding roughly 80% of
+     each recording. No backup existed. The ~7.7 s we can analyse is the
+     surviving head of what was probably a ~40 s capture.
+     -> Mitigation applied: the surviving SVO2s + calibration were copied to
+        C:\Users\yashu\zed_rec\2026-07-23 and SHA256-verified, and all
+        processing now reads/writes there instead of D:.
+     -> Protocol implication: copy SVO2s off the capture medium and verify
+        BEFORE first processing them, since the SDK may rewrite them in place.
+
+
+
+
+========================================================================
 2026-07-27 — Coordinate-system mismatch split one person into several tracks
 Files: modalities/computer-vision/code/replay_fusion_enhanced.py
        modalities/computer-vision/data-spec.md

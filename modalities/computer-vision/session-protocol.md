@@ -110,6 +110,13 @@ Driven by [`multiCameraRecord.py`](code/multiCameraRecord.py). Full SOP in
    camera in `~/zed_rec/`; note sizes/durations; move to canonical paths per
    [../../docs/storage.md](../../docs/storage.md).
 
+> [!IMPORTANT]
+> **Copy the SVO2s off the capture medium and verify them (checksum) BEFORE
+> processing.** If the SDK finds a corrupt chunk it auto-repairs the file
+> **in place**, which truncates it — on 2026-07-23 this silently discarded
+> ~80% of both recordings, and there was no backup. Record the file sizes in
+> the run sheet right after capture so truncation is detectable later.
+
 ---
 
 ## Phase 4 — Processing (build the hybridized 3D + angles)

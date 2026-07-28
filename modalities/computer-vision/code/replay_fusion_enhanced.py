@@ -249,12 +249,16 @@ def _report_person_summary(person_frames, person_head_sum, total_frames):
 
 def write_csv_header(writer, kp_count):
     cols = ["timestamp_ns","person_id","confidence","tracking_state"]
+    # NOTE: every one of these needs the f prefix. They previously did not, so
+    # the header emitted literal "k{i}_y"/"k{i}_z" names -- the data rows were
+    # fine (written positionally) but the file could not be addressed by column
+    # name, which also broke arm_joint_angles.annotate_csv on real CSVs.
     for i in range(kp_count):
-        cols += [f"k{i}_x","k{i}_y","k{i}_z"]
+        cols += [f"k{i}_x", f"k{i}_y", f"k{i}_z"]
     if KINEMATICS_ENABLED:
         for i in range(kp_count):
-            cols += [f"k{i}_vx","k{i}_vy","k{i}_vz",
-                     f"k{i}_ax","k{i}_ay","k{i}_az"]
+            cols += [f"k{i}_vx", f"k{i}_vy", f"k{i}_vz",
+                     f"k{i}_ax", f"k{i}_ay", f"k{i}_az"]
     cols += ["head_x","head_y","head_z","gaze_dx","gaze_dy","gaze_dz"]
     if ARM_ANGLES_ENABLED:
         cols += csv_angle_columns()

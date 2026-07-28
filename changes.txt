@@ -6,6 +6,67 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-28 — multiCameraRecord.py safety review (highest-stakes file)
+File: modalities/computer-vision/code/multiCameraRecord.py
+========================================================================
+
+WHY THIS FILE
+  A processing bug can be fixed by re-running; a RECORDING bug destroys data
+  that cannot be recreated, and the 2026-07-23 session already lost ~80% of its
+  content. Reviewed the capture path specifically for ways a session could be
+  silently wasted. Note this file cannot be executed here (no cameras attached)
+  -- see the VERIFICATION section for exactly what was and was not tested.
+
+FINDING 1 (most serious): a missing camera was SILENT
+  An unplugged/unpowered camera simply does not appear in get_device_list().
+  The script recorded whatever it found, so a two-camera rig with one camera
+  down would produce a single-camera session that CANNOT be fused -- discovered
+  only at processing time, with the subject long gone.
+  The old code only warned when a DETECTED camera failed to open, and even then
+  continued recording a partial rig -- inconsistent with the rest of the file,
+  which treats losing one camera as fatal (enable_recording failure and the
+  grab-failure watchdog both stop every camera).
+  FIX: camera_roles.json already lists exactly the serials the rig should have,
+  so it is now also the expected-camera manifest. check_expected_cameras()
+  aborts before opening anything if any expected serial is absent, and warns
+  about unexpected extras. Failing to open a detected camera is now also an
+  abort, not a warning, and already-opened cameras are closed on that path.
+
+FINDING 2: no disk-space check
+  A mid-session disk-full is unrecoverable, and the protocol now budgets
+  ~4.4 GB per subject. check_disk_headroom() converts free space into MINUTES
+  of recording using the measured rate (~4 MB/s per camera, from the 06-17 and
+  07-23 sessions), aborts below 5 min of headroom and warns below 20 min.
+
+FINDING 3: only SIGINT was handled
+  On SIGTERM (or any kill that skips the shutdown path) disable_recording() is
+  never called and the SVO is left unfinalized. The SDK then reports
+  "Corruption detected in SVO file" and AUTO-REPAIRS BY TRUNCATING IT -- which
+  is a plausible route to the 07-23 data loss. SIGTERM now stops recording
+  cleanly, guarded for platforms lacking it.
+
+FINDING 4: leaked camera handle on failed open
+  A failed cam.open() still left an sl.Camera object unclosed, potentially
+  holding the device and making a retry fail too. Now closed explicitly.
+
+FINDING 5: silent fallback naming
+  With no camera_roles.json the script silently produced cam-SN<serial>_*
+  filenames instead of cam1_*/cam2_*, while the protocol tells the operator to
+  confirm "cam1"/"cam2" lines. It now warns loudly at startup.
+
+VERIFICATION
+  TESTED (pure-Python paths, no cameras needed): both cameras present -> pass;
+  one expected camera missing -> abort with the correct message; unexpected
+  extra camera -> warn and continue; no roles file -> check disabled + warning;
+  disk headroom computed correctly against real free space (261.8 GB ->
+  ~559 min at 8 MB/s for two cameras). File byte-compiles.
+  NOT TESTED: everything requiring real hardware -- open_camera(),
+  enable_recording(), the grab loop, the failure watchdog, and clean shutdown.
+  Exercise these in a short throwaway capture BEFORE the first real subject.
+
+
+
+========================================================================
 2026-07-28 — batch_process_sessions.py: first real run, provenance, QA gates
 File: modalities/computer-vision/code/batch_process_sessions.py
 ========================================================================

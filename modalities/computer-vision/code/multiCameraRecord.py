@@ -1,5 +1,5 @@
 # multi_cam_record_headless.py
-import os, threading, signal, sys, time, json
+import os, shutil, threading, signal, sys, time, json
 from datetime import datetime
 import pyzed.sl as sl
 
@@ -21,9 +21,18 @@ CAMERA_LABELS = {
 }
 
 _ROLES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "camera_roles.json")
+# Serials listed in camera_roles.json are the cameras this rig is SUPPOSED to
+# have. Used below to refuse to record a partial rig (see check_expected_cameras).
+EXPECTED_SERIALS = set()
 if os.path.exists(_ROLES_PATH):
     with open(_ROLES_PATH) as _f:
-        CAMERA_LABELS.update({int(k): str(v) for k, v in json.load(_f).items()})
+        _roles = {int(k): str(v) for k, v in json.load(_f).items()}
+    CAMERA_LABELS.update(_roles)
+    EXPECTED_SERIALS = set(_roles)
+else:
+    print(f"WARNING: no camera_roles.json next to this script ({_ROLES_PATH}).")
+    print("         Recordings will be named cam-SN<serial>_* instead of cam1_*/cam2_*,")
+    print("         and the expected-camera check below is disabled. See code/README.md.")
 
 def label_for(serial):
     """Return the stable label for a serial, or a safe serial-based fallback."""
@@ -32,9 +41,69 @@ def label_for(serial):
     return CAMERA_LABELS.get(serial, f"cam-SN{serial}")
 
 STOP = False
-def on_sigint(sig, frame):
+def on_stop_signal(sig, frame):
     global STOP; STOP = True
-signal.signal(signal.SIGINT, on_sigint)
+# SIGINT is the normal Ctrl+C stop. SIGTERM matters just as much: if the
+# process is killed without running the shutdown path, disable_recording() is
+# never called and the SVO is left unfinalized -- which the SDK later reports
+# as "Corruption detected in SVO file" and AUTO-REPAIRS BY TRUNCATING IT.
+# That is one plausible route to the ~80% data loss on 2026-07-23, so make an
+# ordinary terminate stop the recording cleanly instead.
+signal.signal(signal.SIGINT, on_stop_signal)
+try:
+    signal.signal(signal.SIGTERM, on_stop_signal)
+except (AttributeError, ValueError, OSError):
+    pass  # SIGTERM unavailable on this platform
+
+# Measured on real two-camera sessions (2026-06-17, 2026-07-23): ~4 MB/s per
+# camera of H.265 SVO2. Used to turn free disk into "minutes of headroom".
+MB_PER_S_PER_CAMERA = 4.0
+ABORT_BELOW_MINUTES = 5      # refuse to start; a mid-session disk-full is unrecoverable
+WARN_BELOW_MINUTES  = 20     # start, but say so loudly
+
+def check_disk_headroom(out_dir, n_cameras):
+    """Return True if it is safe to start recording, False to abort."""
+    try:
+        free_bytes = shutil.disk_usage(out_dir).free
+    except OSError as e:
+        print(f"WARNING: could not check free space on {out_dir}: {e}")
+        return True
+    rate = MB_PER_S_PER_CAMERA * max(n_cameras, 1)
+    minutes = free_bytes / (1024 * 1024) / rate / 60.0
+    print(f"Free space: {free_bytes / (1024**3):.1f} GB "
+          f"-> ~{minutes:.0f} min of headroom at {rate:.0f} MB/s ({n_cameras} cameras)")
+    if minutes < ABORT_BELOW_MINUTES:
+        print(f"ABORT: under {ABORT_BELOW_MINUTES} min of recording headroom. "
+              f"Free space before recording — a disk-full mid-session cannot be recovered.")
+        return False
+    if minutes < WARN_BELOW_MINUTES:
+        print(f"WARNING: only ~{minutes:.0f} min of headroom. Confirm this covers the "
+              f"planned session before continuing.")
+    return True
+
+def check_expected_cameras(detected_serials):
+    """Refuse to record a partial rig when camera_roles.json says what to expect.
+
+    Fusion needs every camera, so a session recorded with a camera missing
+    CANNOT be fused and is wasted — and without this check it fails silently:
+    an unplugged camera simply does not appear in get_device_list(), so the
+    script would happily record a useless single-camera session and nobody
+    would find out until processing.
+    """
+    if not EXPECTED_SERIALS:
+        return True  # no roles file; nothing to check against
+    missing = EXPECTED_SERIALS - set(detected_serials)
+    if missing:
+        print(f"ABORT: expected cameras {sorted(EXPECTED_SERIALS)} per camera_roles.json, "
+              f"but {sorted(missing)} were not detected.")
+        print("       Check power/cabling and re-run. Recording without every camera")
+        print("       produces data that cannot be fused.")
+        return False
+    extra = set(detected_serials) - EXPECTED_SERIALS
+    if extra:
+        print(f"WARNING: unexpected camera(s) {sorted(extra)} detected and will also "
+              f"record (not in camera_roles.json).")
+    return True
 
 # Fusion needs every camera's data, so one camera dying mid-session makes the
 # rest of the recording useless on its own. ~3s of consecutive grab failures
@@ -101,10 +170,17 @@ def main():
     if not devs:
         print("No ZED devices found."); return 1
 
+    # Fail BEFORE the subject is in the room, not after a wasted session.
+    if not check_expected_cameras([d.serial_number for d in devs]):
+        return 1
+
     # Output location, stated explicitly and logged so it's easy to find.
     out_dir = os.path.expanduser("~/zed_rec")
     os.makedirs(out_dir, exist_ok=True)
     print(f"Saving recordings to: {out_dir}")
+
+    if not check_disk_headroom(out_dir, len(devs)):
+        return 1
 
     # One timestamp for the whole session so cam1/cam2 files line up.
     session_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -120,13 +196,27 @@ def main():
         cam, err = open_camera(serial)
         if err != sl.ERROR_CODE.SUCCESS:
             print(f"[{serial}] ({label}) open failed: {err}")
+            try:
+                cam.close()   # release the handle so a retry can succeed
+            except Exception:
+                pass
             continue
         opened.append((cam, serial, label))
 
     if not opened:
         print("No cameras opened successfully."); return 1
+    # A partial rig cannot be fused, so this is a failed session, not a
+    # degraded one. Stop now rather than recording something unusable —
+    # and close what we did open so a retry starts clean.
     if len(opened) < len(devs):
-        print(f"WARNING: only {len(opened)}/{len(devs)} cameras opened — continuing with the rest.")
+        print(f"ABORT: only {len(opened)}/{len(devs)} detected cameras opened. "
+              f"Recording without every camera produces data that cannot be fused.")
+        for cam, serial, label in opened:
+            try:
+                cam.close()
+            except Exception:
+                pass
+        return 1
 
     threads=[]
     for cam, serial, label in opened:

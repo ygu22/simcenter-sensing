@@ -457,72 +457,139 @@ class AngleSmoother:
 # ---------------------------------------------------------------------------
 # Tracking convergence ("warm-up") detection
 # ---------------------------------------------------------------------------
-def find_stable_window(lengths: Sequence[float], tol_mm: float = 2.0) -> Optional[int]:
-    """Index of the first frame from which a segment length has converged.
+def _rolling_median(a: np.ndarray, win: int) -> np.ndarray:
+    """Centred-ish rolling median, edge-padded to the input length."""
+    if win < 2 or a.size <= win:
+        return np.full(a.size, np.median(a)) if a.size else a
+    out = np.empty(a.size, dtype=float)
+    half = win // 2
+    for i in range(a.size):
+        lo = max(0, i - half)
+        out[i] = np.median(a[lo:lo + win])
+    return out
 
-    The body-tracking skeleton fit needs time to settle: at the start of a
-    recording the estimated limb lengths drift, then lock on. Since a real limb
-    CANNOT change length, that drift is pure reconstruction error, and it is a
-    reliable, subject-independent convergence signal — no ground truth needed.
 
-    Observed on the 2026-07-23 pilot: upper-arm length ramped 257 -> 279 mm over
-    the first ~3 s (NEURAL) / ~0.8 s (PERFORMANCE) before locking to <1 mm SD.
-    Angles computed inside that ramp are not trustworthy.
+def analyze_length_stability(lengths: Sequence[float], tol_mm: float = 3.0,
+                             win: int = 15) -> dict:
+    """Characterise how a segment length behaves over a recording.
 
-    Returns the first index i such that every frame from i onward stays within
-    `tol_mm` of the median of frames [i:], or None if it never converges.
-    Feed it `upperarm_len_m` or `forearm_len_m` (metres); tol is in mm.
+    A real limb CANNOT change length, so any variation in the estimated length
+    is pure reconstruction error — a subject-independent quality signal needing
+    no ground truth. Two different things show up in it, and they need different
+    responses, so this reports them separately:
 
-    Typical use: drop frames before this index, or start the task after a few
-    seconds of settling (see session-protocol.md).
+    * **Warm-up** — the skeleton fit has not converged yet. The length ramps,
+      then locks on. Seen on 2026-07-23: 257 -> 279 mm over the first ~3 s.
+      Response: DISCARD those frames.
+    * **Drift** — the length keeps wandering for the whole recording (e.g. the
+      subject moves through the capture volume, so reconstruction accuracy
+      varies). Seen on 2026-06-17: ~11 mm of wander across 44 s with no lock.
+      Response: you CANNOT trim this away; treat it as an accuracy bound.
+
+    Returns dict with:
+      warmup_end   index of the first frame considered converged (0 = none)
+      drift_mm     peak-to-peak of the smoothed length AFTER warm-up
+      sd_after_mm  SD of the raw length after warm-up
+      median_mm    reference length (median of the latter half)
+      converged    True if post-warm-up drift is within tol_mm
     """
     a = np.asarray(lengths, dtype=float)
-    a = a[np.isfinite(a)]
+    a = a[np.isfinite(a)] * 1000.0
     if a.size == 0:
+        return {"warmup_end": 0, "drift_mm": float("nan"),
+                "sd_after_mm": float("nan"), "median_mm": float("nan"),
+                "converged": False}
+    # Reference from the LATTER HALF so a long warm-up cannot bias it.
+    ref = float(np.median(a[a.size // 2:]))
+    smooth = _rolling_median(a, min(win, max(2, a.size // 3)))
+    # Warm-up ends the first time the smoothed signal reaches the reference band.
+    close = np.abs(smooth - ref) < tol_mm
+    warmup_end = int(np.argmax(close)) if close.any() else 0
+    tail_s, tail_raw = smooth[warmup_end:], a[warmup_end:]
+    drift = float(tail_s.max() - tail_s.min()) if tail_s.size else float("nan")
+    return {"warmup_end": warmup_end,
+            "drift_mm": drift,
+            "sd_after_mm": float(tail_raw.std()) if tail_raw.size else float("nan"),
+            "median_mm": ref,
+            "converged": bool(drift <= tol_mm)}
+
+
+def find_stable_window(lengths: Sequence[float], tol_mm: float = 3.0) -> Optional[int]:
+    """First frame index at which the segment length has converged.
+
+    Thin wrapper over analyze_length_stability(); returns None when the length
+    never settles into the reference band. Feed metres; tol is in mm.
+    """
+    r = analyze_length_stability(lengths, tol_mm)
+    if not np.isfinite(r["drift_mm"]):
         return None
-    a_mm = a * 1000.0
-    for i in range(a_mm.size):
-        tail = a_mm[i:]
-        if np.all(np.abs(tail - np.median(tail)) < tol_mm):
-            return i
-    return None
+    return r["warmup_end"]
 
 
-def report_stability(in_csv: str, tol_mm: float = 2.0) -> int:
-    """Print the convergence point of a fused CSV. Returns 0 on success."""
+def report_stability(in_csv: str, tol_mm: float = 3.0) -> int:
+    """Report per-person tracking convergence for a fused CSV.
+
+    MUST group by person_id: different tracks are different bodies (and
+    spurious tracks have wildly wrong limb lengths), so pooling them makes the
+    stability estimate meaningless.
+    """
     with open(in_csv, "r", newline="") as f:
         rows = list(csv.DictReader(f))
     if not rows:
         print("no rows")
         return 1
-    ts = np.array([float(r["timestamp_ns"]) for r in rows])
-    t = (ts - ts.min()) / 1e9
-    print(f"{len(rows)} rows spanning {t.max():.1f} s")
-    worst = 0
-    for side in _SIDES:
-        for seg in ("upperarm_len_m", "forearm_len_m"):
-            col = f"{side}_{seg}"
-            if col not in rows[0]:
-                continue
-            vals = []
-            for r in rows:
-                try:
-                    vals.append(float(r[col]))
-                except (ValueError, KeyError):
-                    vals.append(float("nan"))
-            i = find_stable_window(vals, tol_mm)
-            arr = np.asarray(vals, dtype=float)
-            if i is None:
-                print(f"  {col:22s} never converges within {tol_mm} mm")
-                worst = max(worst, len(rows))
-            else:
-                sd = np.nanstd(arr[i:]) * 1000.0
-                print(f"  {col:22s} converges at frame {i:4d} (t={t[i]:5.2f} s), "
-                      f"SD after = {sd:.2f} mm")
-                worst = max(worst, i)
-    print(f"\nRecommended: discard the first {worst} frames "
-          f"(t < {t[worst]:.2f} s) before analysis." if worst < len(rows)
-          else "\nWARNING: tracking never converged; do not trust these angles.")
+
+    t_all = np.array([float(r["timestamp_ns"]) for r in rows])
+    t0 = t_all.min()
+    by_pid: Dict[int, list] = {}
+    for r in rows:
+        try:
+            pid = int(float(r.get("person_id", -1)))
+        except ValueError:
+            pid = -1
+        by_pid.setdefault(pid, []).append(r)
+
+    print(f"{len(rows)} rows, {len(by_pid)} person_id(s), "
+          f"spanning {(t_all.max()-t0)/1e9:.1f} s\n")
+
+    for pid, sub in sorted(by_pid.items(), key=lambda kv: -len(kv[1])):
+        ts = np.array([float(r["timestamp_ns"]) for r in sub])
+        t = (ts - t0) / 1e9
+        share = 100.0 * len(sub) / len(rows)
+        print(f"person {pid}: {len(sub)} rows ({share:.0f}% of file), "
+              f"t {t.min():.1f}-{t.max():.1f} s")
+        flagged = False
+        for side in _SIDES:
+            for seg in ("upperarm_len_m", "forearm_len_m"):
+                col = f"{side}_{seg}"
+                if col not in sub[0]:
+                    continue
+                vals = []
+                for r in sub:
+                    try:
+                        vals.append(float(r[col]))
+                    except (ValueError, KeyError):
+                        vals.append(float("nan"))
+                res = analyze_length_stability(vals, tol_mm)
+                idx = res["warmup_end"]
+                tw = t[idx] if idx < len(t) else float("nan")
+                verdict = "stable" if res["converged"] else f"DRIFTS {res['drift_mm']:.1f} mm"
+                print(f"   {col:18s} {res['median_mm']:6.1f} mm | warm-up ends "
+                      f"frame {idx:4d} (t={tw:5.2f}s) | SD after {res['sd_after_mm']:4.2f} mm"
+                      f" | {verdict}")
+                # An adult upper arm is ~25-38 cm; anything far outside that is
+                # not a real person, it is a spurious track.
+                if seg == "upperarm_len_m" and not (0.20 <= res["median_mm"] / 1000 <= 0.45):
+                    flagged = True
+        if flagged:
+            print(f"   ^ implausible limb length -- person {pid} is very likely a "
+                  f"SPURIOUS track, exclude it")
+        print()
+
+    main = max(by_pid, key=lambda k: len(by_pid[k]))
+    print(f"Main subject: person {main} ({len(by_pid[main])} rows). Analyse that "
+          f"person_id, after its warm-up, and treat any reported drift as an "
+          f"accuracy bound you cannot trim away.")
     return 0
 
 

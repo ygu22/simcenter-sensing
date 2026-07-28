@@ -6,6 +6,66 @@ Newest entries at the top.
 
 
 ========================================================================
+2026-07-27 (later still) — Phantom tracks; QA-tool corrections; 06-17 session
+Files: modalities/computer-vision/code/arm_joint_angles.py
+       modalities/computer-vision/code/diagnose_fusion_frame.py
+========================================================================
+
+CONTEXT
+  New video capture is unavailable for several weeks, so the previously
+  unprocessed full-length sessions in the backup were used instead. The
+  2026-06-17 L&D session (192.9 + 194.7 MB, with its own ZED360 calibration for
+  the same two cameras) processed cleanly under COORD_SYSTEM=IMAGE:
+  44.0 s, 476 frames -- roughly 8x the usable data of the truncated 07-23 clip.
+
+FINDING: Fusion emits short-lived PHANTOM tracks during start-up
+  The 06-17 run produced three person_ids:
+      person 0 : 431 rows (91%), conf 94, upper arm 291 mm   <- the real subject
+      person 1 :  24 rows  (5%), conf 34, upper arm 190 mm   <- phantom
+      person 2 :  28 rows  (6%), conf 24, upper arm 122 mm   <- phantom
+  Both phantoms live entirely inside the first 3.3 s (the tracking warm-up) and
+  have anatomically impossible limb lengths. They are start-up artefacts, not
+  people. Note the per-frame quality flag read "ok" for every one of their rows.
+
+  CORRECTION: an earlier reading of the diagnostic output claimed 06-17 showed
+  "two real people 0.67 m apart", inferred from a large rigid-alignment residual
+  (30.9 cm vs 5.7 cm for the 07-23 fragmentation). That inference was WRONG.
+  The residual does not separate phantoms from people, because a wrong-SCALE
+  skeleton also fails to align. Limb-length plausibility does separate them.
+
+FIXES TO diagnose_fusion_frame.py
+  1. Counts only anatomically plausible tracks (upper arm 0.20-0.45 m) as
+     "real", reporting the rest as "phantom", instead of trusting the residual.
+     The residual heuristic and its FRAGMENT_RESID_CM threshold are removed.
+  2. Skips a leading --skip-frames window (default 90) before counting. The old
+     default sampled only 120 frames (~4 s), i.e. almost entirely the warm-up --
+     precisely where phantoms appear and the fit has not converged. It was
+     systematically judging conventions on the least reliable data.
+  Re-run on 06-17 after both fixes: IMAGE -> 1 real, 0 phantom (recommended),
+  matching the full-length processing and the 07-23 result for the same rig.
+
+FIXES TO arm_joint_angles.py stability reporting
+  1. report_stability() pooled ALL person_ids into one series. With phantoms
+     present (122 mm and 190 mm arms) the estimate was meaningless: it advised
+     discarding 479 of 483 frames. It now groups by person_id, ranks by row
+     count, and flags any track whose limb length is anatomically implausible.
+  2. find_stable_window() assumed "ramp, then lock", which holds for 07-23 but
+     not for 06-17, where the length WANDERS ~14 mm across the whole 44 s with
+     no lock. It silently returned an absurd 4-frame window instead of saying
+     so. Replaced with analyze_length_stability(), which reports warm-up end and
+     post-warm-up DRIFT separately, using a reference taken from the latter half
+     so a long warm-up cannot bias it. Drift is reported as an accuracy bound to
+     live with, not something to trim away.
+
+WHY THE TWO SESSIONS DIFFER
+  07-23: 2.8 mm drift after warm-up -> tight, "converge and lock".
+  06-17: 13.9 mm drift, no lock. Consistent with a subject moving through the
+  capture volume over 44 s so reconstruction accuracy varies with pose and
+  distance. Treat 06-17 angles as coarser than 07-23 ones.
+
+
+
+========================================================================
 2026-07-27 (later) — CSV header bug; corrected run CONFIRMS the frame fix
 File: modalities/computer-vision/code/replay_fusion_enhanced.py
 ========================================================================

@@ -50,9 +50,18 @@ import pyzed.sl as sl
 
 import replay_fusion_enhanced as rfe
 from projection_helpers import load_extrinsics_from_fusion_conf
+from arm_joint_angles import get_arm_indices
 
 # Candidate conventions, with handedness. IMAGE is X right / Y down / Z forward
 # (the OpenCV convention) and is right-handed.
+# Plausible adult upper-arm length (metres), shoulder to elbow. Fusion readily
+# emits short-lived phantom tracks during start-up whose skeletons are the right
+# SHAPE but the wrong SCALE -- 2026-06-17 produced two of them at 122 mm and
+# 190 mm. Counting only anatomically plausible tracks is a far more reliable
+# discriminator than the rigid-alignment residual, which flagged those same
+# phantoms as "different people".
+UPPERARM_MIN_M, UPPERARM_MAX_M = 0.20, 0.45
+
 CANDIDATES = [
     ("IMAGE",                   sl.COORDINATE_SYSTEM.IMAGE,                   "right"),
     ("RIGHT_HANDED_Z_UP",       sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP,       "right"),
@@ -83,7 +92,8 @@ def _rigid_align(A: np.ndarray, B: np.ndarray):
     return resid, ang
 
 
-def run_candidate(svo_files, fusion_conf, coord_system, max_frames, depth_mode):
+def run_candidate(svo_files, fusion_conf, coord_system, max_frames, depth_mode,
+                  skip_frames=90):
     """Run a short fusion pass under one convention.
 
     Returns dict(persons, counts, frames, resid_cm, rot_deg, sep_m) or
@@ -115,6 +125,9 @@ def run_candidate(svo_files, fusion_conf, coord_system, max_frames, depth_mode):
         rt = [sl.RuntimeParameters() for _ in clients]
         bt_rt = sl.BodyTrackingFusionRuntimeParameters()
         counts, kp_by_pid, head_by_pid = {}, {}, {}
+        uarm_by_pid = {}   # pid -> list of shoulder->elbow lengths (m)
+        bf = "BODY_34" if rfe.BODY_FORMAT == sl.BODY_FORMAT.BODY_34 else "BODY_38"
+        aidx = get_arm_indices(bf)
         frames = 0
         active = True
 
@@ -123,7 +136,11 @@ def run_candidate(svo_files, fusion_conf, coord_system, max_frames, depth_mode):
             for i, cam in enumerate(clients):
                 if cam.grab(rt[i]) == sl.ERROR_CODE.SUCCESS:
                     active = True
-            if fusion.process() == sl.FUSION_ERROR_CODE.SUCCESS:
+            # Ignore the start-up window: the skeleton fit has not converged
+            # there, and it is where phantom tracks appear (see changes.txt,
+            # 2026-07-27 warm-up entry). Judging a convention on those frames
+            # samples exactly the least reliable part of the recording.
+            if fusion.process() == sl.FUSION_ERROR_CODE.SUCCESS and frames >= skip_frames:
                 fused = sl.Bodies()
                 fusion.retrieve_bodies(fused, bt_rt)
                 for b in fused.body_list:
@@ -133,9 +150,23 @@ def run_candidate(svo_files, fusion_conf, coord_system, max_frames, depth_mode):
                     kp_by_pid.setdefault(pid, kp)  # keep first good skeleton
                     if np.isfinite(kp).any():
                         head_by_pid.setdefault(pid, np.nanmean(kp, axis=0))
+                    sh, el = aidx.get("left_shoulder"), aidx.get("left_elbow")
+                    if sh is not None and el is not None and max(sh, el) < kp.shape[0]:
+                        seg = kp[sh] - kp[el]
+                        if np.all(np.isfinite(seg)):
+                            uarm_by_pid.setdefault(pid, []).append(float(np.linalg.norm(seg)))
             frames += 1
 
-        out = {"persons": len(counts), "counts": counts, "frames": frames}
+        # Count only anatomically plausible tracks; phantoms have wrong scale.
+        plausible, phantoms = [], []
+        for pid in counts:
+            lens = uarm_by_pid.get(pid, [])
+            m = float(np.median(lens)) if lens else float("nan")
+            (plausible if (np.isfinite(m) and UPPERARM_MIN_M <= m <= UPPERARM_MAX_M)
+             else phantoms).append((pid, m))
+
+        out = {"persons": len(counts), "counts": counts, "frames": frames,
+               "plausible": len(plausible), "phantoms": phantoms}
         # If it split, quantify whether the two biggest tracks are one body.
         if len(counts) >= 2:
             top = sorted(counts, key=counts.get, reverse=True)[:2]
@@ -162,8 +193,10 @@ def main(argv=None) -> int:
     ap.add_argument("--svo", action="append", required=True,
                     help="SVO2 file (repeat once per camera)")
     ap.add_argument("--fusion-conf", required=True, help="ZED360 fusion_calibration.json")
-    ap.add_argument("--max-frames", type=int, default=120,
-                    help="frames per candidate (default 120; higher = slower but surer)")
+    ap.add_argument("--max-frames", type=int, default=240,
+                    help="frames per candidate (default 240; higher = slower but surer)")
+    ap.add_argument("--skip-frames", type=int, default=90,
+                    help="leading frames to ignore while tracking converges (default 90)")
     ap.add_argument("--expect-people", type=int, default=1,
                     help="how many people were really in the room (default 1)")
     ap.add_argument("--fast", action="store_true",
@@ -185,28 +218,45 @@ def main(argv=None) -> int:
         for name, cs, hand in CANDIDATES:
             print(f"--- testing {name} ---", file=sys.stderr)
             try:
-                res = run_candidate(args.svo, args.fusion_conf, cs, args.max_frames, depth)
+                res = run_candidate(args.svo, args.fusion_conf, cs, args.max_frames,
+                                    depth, args.skip_frames)
             except Exception as e:  # a bad convention shouldn't kill the sweep
                 res = {"error": str(e)[:60]}
             results.append((name, hand, res))
     finally:
         rfe.COORD_SYSTEM = original
 
-    print(f"\n{'candidate':<26}{'hand':<7}{'persons':>8}{'resid_cm':>10}{'rot_deg':>9}{'sep_m':>8}")
+    print(f"\n{'candidate':<26}{'hand':<7}{'real':>6}{'phantom':>9}{'resid_cm':>10}{'sep_m':>8}")
     for name, hand, r in results:
         if "error" in r:
-            print(f"{name:<26}{hand:<7}{'ERR':>8}   {r['error']}")
+            print(f"{name:<26}{hand:<7}{'ERR':>6}   {r['error']}")
             continue
         f = lambda k, w, p=1: (f"{r[k]:>{w}.{p}f}" if k in r else " " * (w - 1) + "-")
-        print(f"{name:<26}{hand:<7}{r['persons']:>8}{f('resid_cm',10)}{f('rot_deg',9)}{f('sep_m',8,2)}")
+        print(f"{name:<26}{hand:<7}{r['plausible']:>6}{len(r['phantoms']):>9}"
+              f"{f('resid_cm',10)}{f('sep_m',8,2)}")
+    print('\n"real" counts only anatomically plausible tracks; "phantom" tracks have')
+    print("an impossible limb length and are start-up artefacts, not people.")
 
     ok = [(n, h, r) for n, h, r in results
-          if "error" not in r and r["persons"] == args.expect_people]
+          if "error" not in r and r["plausible"] == args.expect_people]
     print()
     if not ok:
         print(f"No candidate produced exactly {args.expect_people} person(s).")
-        print("Check that the calibration really belongs to these recordings, and")
-        print("that both cameras actually saw the subject.")
+        print()
+        # The residual distinguishes the two reasons for a split. Fragmentation
+        # is the SAME body in two frames, so the tracks align almost perfectly
+        # as a rigid body (small residual) after a large rotation. Genuinely
+        # separate people are in different poses, so they never align well.
+        best = min((r["plausible"] for _, _, r in results if "error" not in r),
+                   default=None)
+        if best is not None and best > args.expect_people:
+            print(f"Every convention yields at least {best} anatomically plausible")
+            print("tracks, so this is probably not a frame problem -- more people than")
+            print("expected were genuinely in view. Confirm against a demo video, then")
+            print(f"re-run with --expect-people {best}.")
+        else:
+            print("Check that the calibration really belongs to these recordings, and")
+            print("that both cameras saw the subject for the sampled frames.")
         return 1
 
     right = [x for x in ok if x[1] == "right"]

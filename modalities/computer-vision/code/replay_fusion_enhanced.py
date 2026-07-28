@@ -18,7 +18,7 @@ Fill in SVO paths and Fusion calibration path below.
 """
 
 import os, sys, csv, math, time
-from collections import defaultdict, deque
+from collections import defaultdict, deque, Counter
 
 import pyzed.sl as sl
 import numpy as np
@@ -215,6 +215,38 @@ def add_inputs_to_fusion(fusion, serials, Twc_map):
             return False
     return True
 
+def _report_person_summary(person_frames, person_head_sum, total_frames):
+    """Print per-person coverage and warn if one subject looks fragmented.
+
+    A coordinate-system mismatch between the ZED360 calibration and
+    COORD_SYSTEM makes Fusion reconstruct each camera's view of the SAME
+    person into a different part of world space, so it emits several
+    person_ids instead of one. That failure is silent in the CSV -- every row
+    looks confident and well-formed -- so surface it here. See changes.txt
+    (2026-07-27, coordinate-system mismatch).
+    """
+    if not person_frames:
+        print("[PEOPLE] no fused bodies were produced")
+        return
+    print(f"[PEOPLE] {len(person_frames)} fused person_id(s) over {total_frames} frames:")
+    for pid, n in sorted(person_frames.items()):
+        cov = (100.0 * n / total_frames) if total_frames else 0.0
+        head = person_head_sum.get(pid)
+        where = ""
+        if head is not None and n:
+            m = head / n
+            where = f"  mean head=({m[0]:.2f}, {m[1]:.2f}, {m[2]:.2f}) m"
+
+        print(f"         person {pid}: {n} frames ({cov:.0f}% coverage){where}")
+
+    if len(person_frames) > 1:
+        print("[PEOPLE] WARNING: more than one person was tracked.")
+        print("         If only ONE person was in the room, this is very likely a")
+        print("         coordinate-system mismatch, not two subjects: check a demo")
+        print("         video, then run diagnose_fusion_frame.py to find the")
+        print("         COORD_SYSTEM that merges them into a single person_id.")
+
+
 def write_csv_header(writer, kp_count):
     cols = ["timestamp_ns","person_id","confidence","tracking_state"]
     for i in range(kp_count):
@@ -402,6 +434,10 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
     body_fusion_rt = sl.BodyTrackingFusionRuntimeParameters()
     active = True
     frame_idx = 0
+    # Per-person frame counts + mean head position, used for the post-run
+    # fragmentation check (see _report_person_summary).
+    person_frames = Counter()
+    person_head_sum = defaultdict(lambda: np.zeros(3))
     try:
         while active:
             active = False
@@ -469,9 +505,12 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
                         kp, body_format=bf_str,
                         keys_override=None  # or pass your custom dict once you verify indices
                     )
+                    person_frames[pid] += 1
+
                     if head_o is not None and fwd is not None:
                         gaze_dir = fwd / (np.linalg.norm(fwd) + 1e-9)
                         fused_head_gaze[pid] = (head_o, gaze_dir)
+                        person_head_sum[pid] += np.asarray(head_o, dtype=float)
                         row.extend([float(head_o[0]), float(head_o[1]), float(head_o[2]),
                                     float(gaze_dir[0]), float(gaze_dir[1]), float(gaze_dir[2])])
                     else:
@@ -590,6 +629,7 @@ def process_session(svo_files, fusion_conf, out_csv, head_crop_dir=None, video_d
         except Exception:
             pass
         csvf.flush(); csvf.close()
+        _report_person_summary(person_frames, person_head_sum, frame_idx)
         print(f"[OK] CSV written to {out_csv}")
         if ARM_ANGLES_ENABLED:
             print(f"[OK] Arm joint angles appended ({len(arm_cols)} columns)")

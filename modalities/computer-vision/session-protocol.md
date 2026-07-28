@@ -154,12 +154,23 @@ the headline outputs are:
 
 **Sanity checks before trusting a session:**
 
-1. In the **calibration-frame** window (arms straight down), `elbow_flexion_deg`
+1. **Check the person count first.** The run prints a `[PEOPLE]` summary. It must
+   match how many people were actually in the room. If one subject comes out as
+   two or more `person_id`s, the world coordinate convention does not match the
+   ZED360 calibration, and **every angle from that run is invalid** — the same
+   body has been reconstructed into two different frames. Fix it before looking
+   at anything else:
+   ```bash
+   python diagnose_fusion_frame.py --svo cam1.svo2 --svo cam2.svo2 --fusion-conf fusion_calibration.json --fast
+   ```
+   then set the recommended `COORD_SYSTEM` in `replay_fusion_enhanced.py` and
+   re-run. See changes.txt (2026-07-27) for the worked example.
+2. In the **calibration-frame** window (arms straight down), `elbow_flexion_deg`
    should be near **0°** and `shoulder_elevation_deg` near **0°**. Large offsets
    flag a calibration or coordinate-frame problem.
-2. The QA columns `upperarm_len_m` / `forearm_len_m` should be roughly constant
+3. The QA columns `upperarm_len_m` / `forearm_len_m` should be roughly constant
    across the session; wild variation flags bad tracking for those frames.
-3. Filter to `L_quality == "ok"` / `R_quality == "ok"` for analysis; the other
+4. Filter to `L_quality == "ok"` / `R_quality == "ok"` for analysis; the other
    flag values tell you *why* a frame was dropped.
 
 ---

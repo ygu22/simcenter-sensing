@@ -68,6 +68,22 @@ IMPORTANT CONSEQUENCE
   reconstructed in the wrong world frame, and the "two people" in that output
   were one person counted twice. Re-run before using any of it.
 
+GUARDS ADDED so this cannot pass silently again
+  - replay_fusion_enhanced.py now prints a [PEOPLE] summary at the end of every
+    run (per-person frame count, % coverage, mean head position) and prints an
+    explicit WARNING when more than one person was tracked, pointing at the
+    demo video and the diagnostic tool. Unit-tested on healthy / fragmented /
+    empty cases.
+  - NEW code/diagnose_fusion_frame.py: sweeps the six COORDINATE_SYSTEM
+    candidates over a given SVO pair + calibration and reports how many people
+    each produces, plus a rigid-alignment residual/rotation between the two
+    biggest tracks (small residual + large rotation = one body in two frames).
+    It recommends a winner and PREFERS A RIGHT-HANDED one, warning if only
+    left-handed conventions merge. Run it once per camera setup/recalibration.
+        python diagnose_fusion_frame.py --svo cam1.svo2 --svo cam2.svo2 \
+            --fusion-conf fusion_calibration.json --fast
+  - session-protocol.md: "check the person count" is now sanity check #1.
+
 
 ========================================================================
 2026-07-27 — Port fusion pipeline to the installed ZED SDK 5.4 API

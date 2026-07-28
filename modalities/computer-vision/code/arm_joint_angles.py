@@ -455,6 +455,78 @@ class AngleSmoother:
 
 
 # ---------------------------------------------------------------------------
+# Tracking convergence ("warm-up") detection
+# ---------------------------------------------------------------------------
+def find_stable_window(lengths: Sequence[float], tol_mm: float = 2.0) -> Optional[int]:
+    """Index of the first frame from which a segment length has converged.
+
+    The body-tracking skeleton fit needs time to settle: at the start of a
+    recording the estimated limb lengths drift, then lock on. Since a real limb
+    CANNOT change length, that drift is pure reconstruction error, and it is a
+    reliable, subject-independent convergence signal — no ground truth needed.
+
+    Observed on the 2026-07-23 pilot: upper-arm length ramped 257 -> 279 mm over
+    the first ~3 s (NEURAL) / ~0.8 s (PERFORMANCE) before locking to <1 mm SD.
+    Angles computed inside that ramp are not trustworthy.
+
+    Returns the first index i such that every frame from i onward stays within
+    `tol_mm` of the median of frames [i:], or None if it never converges.
+    Feed it `upperarm_len_m` or `forearm_len_m` (metres); tol is in mm.
+
+    Typical use: drop frames before this index, or start the task after a few
+    seconds of settling (see session-protocol.md).
+    """
+    a = np.asarray(lengths, dtype=float)
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return None
+    a_mm = a * 1000.0
+    for i in range(a_mm.size):
+        tail = a_mm[i:]
+        if np.all(np.abs(tail - np.median(tail)) < tol_mm):
+            return i
+    return None
+
+
+def report_stability(in_csv: str, tol_mm: float = 2.0) -> int:
+    """Print the convergence point of a fused CSV. Returns 0 on success."""
+    with open(in_csv, "r", newline="") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        print("no rows")
+        return 1
+    ts = np.array([float(r["timestamp_ns"]) for r in rows])
+    t = (ts - ts.min()) / 1e9
+    print(f"{len(rows)} rows spanning {t.max():.1f} s")
+    worst = 0
+    for side in _SIDES:
+        for seg in ("upperarm_len_m", "forearm_len_m"):
+            col = f"{side}_{seg}"
+            if col not in rows[0]:
+                continue
+            vals = []
+            for r in rows:
+                try:
+                    vals.append(float(r[col]))
+                except (ValueError, KeyError):
+                    vals.append(float("nan"))
+            i = find_stable_window(vals, tol_mm)
+            arr = np.asarray(vals, dtype=float)
+            if i is None:
+                print(f"  {col:22s} never converges within {tol_mm} mm")
+                worst = max(worst, len(rows))
+            else:
+                sd = np.nanstd(arr[i:]) * 1000.0
+                print(f"  {col:22s} converges at frame {i:4d} (t={t[i]:5.2f} s), "
+                      f"SD after = {sd:.2f} mm")
+                worst = max(worst, i)
+    print(f"\nRecommended: discard the first {worst} frames "
+          f"(t < {t[worst]:.2f} s) before analysis." if worst < len(rows)
+          else "\nWARNING: tracking never converged; do not trust these angles.")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Offline CSV post-processing
 # ---------------------------------------------------------------------------
 def _infer_kp_count(header: Sequence[str]) -> int:
@@ -657,7 +729,17 @@ def _main(argv=None) -> int:
                     help="moving-window size for temporal smoothing (0/1 = off)")
     ap.add_argument("--selftest", action="store_true",
                     help="run synthetic self-test and exit")
+    ap.add_argument("--stability", action="store_true",
+                    help="report when tracking converged (segment-length based) and exit")
+    ap.add_argument("--tol-mm", type=float, default=2.0,
+                    help="convergence tolerance for --stability (default 2.0 mm)")
     args = ap.parse_args(argv)
+
+    if args.stability:
+        if not args.in_csv:
+            print("error: --stability needs an input CSV", file=__import__("sys").stderr)
+            return 2
+        return report_stability(args.in_csv, args.tol_mm)
 
     if args.selftest or not args.in_csv:
         return _selftest()

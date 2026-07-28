@@ -68,15 +68,35 @@ training?*, *how much time is spent in high-strain shoulder postures?*, and
 
 ## Feasibility evidence (for the "can we even do this" question)
 
-- **End-to-end pipeline runs** from two SVO recordings to a fused 3D skeleton
-  with per-joint kinematics and arm angles.
-- **Angle math is validated**: a built-in self-test reproduces known
-  ground-truth angles for reference poses (elbow 0°/90°, shoulder elevation with
-  forward vs. sideways plane), and flags missing/low-quality joints instead of
-  fabricating numbers.
-- **Built-in quality signals**: per-frame tracking confidence, per-arm quality
-  flags, and stable segment-length checks let us report *what fraction of the
-  session was cleanly tracked* — a concrete feasibility number to show.
+**Demonstrated end to end on a real two-camera pilot recording (2026-07-23).**
+From two raw `.svo2` files to per-frame 3D arm angles:
+
+| Measure | Result |
+|---|---|
+| Subject correctly fused from both cameras | 1 person (matches the video) |
+| Tracking coverage | **207 of 225 frames (92%)** |
+| Arm-angle quality flag | **100% `ok`**, both arms |
+| Upper-arm length consistency | 0.284 m, SD **1 mm** (CV 0.3%) |
+| Forearm length consistency | 0.273 m, SD **1 mm** (CV 0.3%) |
+
+The segment-length numbers are the strongest evidence. A real arm cannot change
+length, so if the 3D reconstruction were noisy or mis-calibrated these would
+wander. Holding to **±1 mm across the session** says the skeleton is
+geometrically sound — and it is an independent check, since nothing in the angle
+computation constrains it.
+
+Measured on that clip: elbow flexion spanned 15–67° on the active arm, shoulder
+elevation 12–57°, with the right shoulder held above 45° for essentially the
+whole task and neither arm exceeding 60°.
+
+- **Angle math is independently validated**: a built-in self-test reproduces
+  known ground-truth angles for reference poses (elbow 0°/90°, shoulder
+  elevation with forward vs. sideways plane), and flags missing/low-quality
+  joints instead of fabricating numbers.
+- **Failure modes are detected, not silent**: the pipeline reports how many
+  people it fused and warns when one subject fragments into several tracks —
+  the failure that would otherwise quietly corrupt every angle (see
+  changes.txt, 2026-07-27).
 
 ## Honest limitations / dependencies
 
@@ -92,10 +112,17 @@ training?*, *how much time is spent in high-strain shoulder postures?*, and
   we'd next do a small **concurrent-validity check** against a reference (e.g.
   a few poses measured with a goniometer or marker-based system) to quantify
   angle error.
+- **The 2026-07-23 pilot clip is short (7.7 s).** The original recordings were
+  ~5× longer, but the ZED SDK's automatic SVO corruption repair rewrote and
+  truncated them in place during first processing, and no backup existed. The
+  numbers above are sound for what they cover, but they describe a few seconds
+  of task, not a full session. Recordings are now copied and checksummed before
+  processing so this cannot recur.
 
 ## Suggested next step to strengthen the pitch
 
-Run one pilot session end-to-end, then show the PI: (1) an annotated demo clip,
+Capture one **full-length** pilot session (the 7/23 clip was truncated), then
+show the PI: (1) an annotated demo clip,
 (2) an elbow/shoulder-angle-vs-time plot for a representative task, (3) a ROM +
 ergonomic-exposure summary table, and (4) the tracking-coverage % as the
 feasibility headline.

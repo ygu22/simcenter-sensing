@@ -89,20 +89,64 @@ dataset; deviations go in the run sheet.
   run-sheet times and sync markers (do not stop/restart the recorder between
   bouts).
 
-**Reference poses (recorded every session, in this order)**
+**Settling period (FIRST, before anything you intend to analyse)**
+
+> [!IMPORTANT]
+> **Record ≥ 30 s of the subject simply standing in frame before the reference
+> poses.** Body-tracking limb-length estimates need time to converge, and
+> angles computed before convergence are wrong while the per-frame `quality`
+> flag still reads `ok` — nothing else catches it. Measured convergence on real
+> sessions: **3.2 s** (2026-07-23) and **14.8 s** (2026-06-17). Fusion also
+> emits short-lived *phantom* tracks during this window (2026-06-17 produced
+> two, with 122 mm and 190 mm "upper arms").
+>
+> 30 s buys ~2× margin over the worst case observed. Without it, the reference
+> poses below land inside the warm-up and the zero reference — and every QA
+> gate built on it — is invalid. Verify per session with
+> `python arm_joint_angles.py <fused_bodies.csv> --stability`.
+
+**Reference poses (recorded every session, in this order, AFTER settling)**
 1. **Standing calibration frame** — rescuer stands, arms hanging straight at
-   the sides, ~5 s. Expect elbow flexion ≈ 0° and shoulder elevation ≈ 0°.
+   the sides, **~10 s**. Expect elbow flexion ≈ 0° and shoulder elevation ≈ 0°.
 2. **Compression-start static hold** — hands stacked on the manikin's
-   sternum, elbows locked, shoulders over hands, ~5 s, no compressions.
+   sternum, elbows locked, shoulders over hands, **~10 s**, no compressions.
    Expect elbow flexion near 0°; this is the task-specific zero reference
    and the occlusion worst case — if quality flags fail here, fix the setup
    before recording bouts.
+
+(10 s rather than 5 s so each pose still yields several seconds of clean data
+if convergence runs long, and so the median is taken over enough frames to be
+robust.)
 
 **Trial structure**
 - Compressions-only (no ventilations) unless the study says otherwise.
 - **Bouts of 2 minutes** at guideline rate (100–120 min⁻¹; metronome
   optional but if used, note the setting), separated by ≥ 1 minute rest.
-  <!-- TODO(unassigned): Fix bout count per session and metronome policy once the study design is set. -->
+  Two minutes is the AHA compressor-switch interval, so bouts are directly
+  comparable to the CPR literature, and each yields **200–240 compressions** —
+  well past what a stable per-subject angle estimate needs (a single minute
+  already gives 100–120 cycles). Duration is therefore chosen for fatigue
+  realism and comparability, **not** statistical power.
+- **Default: 3 bouts per subject.** One bout cannot separate fatigue from
+  subject-level technique; three gives a within-subject trajectory (bout 1 vs
+  3) plus a repeatability estimate, at ~10 min of recording.
+  - Use **2 bouts** if subject burden or scheduling is tight, or if the study
+    only characterises technique rather than decline.
+  - Use **longer continuous bouts** (or more of them) only if fatigue-induced
+    decline is itself the outcome of interest and 2 min does not elicit it.
+- Keep bout count and duration **identical for every subject** in the dataset.
+
+**Session length and storage** (measured at ~7.5 MB/s for both cameras
+combined, from the 2026-06-17 and 2026-07-23 recordings):
+
+| Structure | Recording | Disk (2 cameras) |
+|---|---|---|
+| settle + poses + 2 bouts | ~7 min | ~3.1 GB |
+| settle + poses + **3 bouts** (default) | ~10 min | **~4.4 GB** |
+| settle + poses + 4 bouts | ~13 min | ~5.7 GB |
+
+Budget disk **per subject** accordingly, and confirm free space before each
+session — a mid-session disk-full is unrecoverable.
 - Mark each bout start/end verbally on the run sheet against the canonical
   clock; a hand-clap sync marker opens and closes the session
   ([../../docs/time-sync.md](../../docs/time-sync.md)).
@@ -114,12 +158,23 @@ dataset; deviations go in the run sheet.
   data in the repo.
 
 **Session acceptance (QA gates)**
+- **Exactly one person tracked.** The run prints a `[PEOPLE]` summary; only one
+  subject is in frame, so anything else is a phantom track or a coordinate-frame
+  problem. Check limb lengths to tell them apart (an adult upper arm is
+  ~250–380 mm; phantoms come out far outside that) — see changes.txt, 2026-07-27.
+- **Tracking converged before the reference poses.** Run
+  `python arm_joint_angles.py <fused_bodies.csv> --stability`; the reported
+  warm-up must end before the standing calibration frame begins.
 - Static holds read as expected: elbow flexion within tolerance of 0°
   (<!-- TODO(unassigned): set tolerance from pilot, e.g. ±10° -->).
 - Per-arm `quality == "ok"` on ≥ <!-- TODO: e.g. 90% --> of compression-bout
-  frames.
-- `upperarm_len_m` / `forearm_len_m` stable across the session (no wild
-  swings).
+  frames. Note this flag is necessary but **not sufficient** — it read `ok`
+  throughout both the warm-up and the phantom tracks.
+- `upperarm_len_m` / `forearm_len_m` stable across the session. The
+  `--stability` report gives post-warm-up drift; observed 2.8 mm (2026-07-23,
+  subject stationary) vs 13.9 mm (2026-06-17, subject moving through the
+  volume). Large drift is an accuracy bound you cannot trim away — record it
+  with the session rather than discarding frames.
 - Wrist vertical excursion shows a clear periodic signal at the metronome
   rate during bouts.
 Sessions failing a gate are flagged, not silently included.
@@ -139,13 +194,20 @@ Sessions failing a gate are flagged, not silently included.
    `recording to ...` lines (`cam1`, `cam2`).
 4. **Opening sync marker** (hand clap visible to both cameras); note canonical
    time.
-5. **Standing calibration frame** (~5 s).
-6. **Compression-start static hold** (~5 s).
-7. **Bout 1** — 2 min compressions; note start/end times. Rest ≥ 1 min.
-   Repeat for the planned number of bouts.
-8. **Closing sync marker**, then `Ctrl+C`. Confirm one `.svo2` per camera in
+5. **Settling period** — subject stands in frame, still, **≥ 30 s**, while
+   tracking converges. Do not skip: everything after this depends on it.
+6. **Standing calibration frame** (~10 s).
+7. **Compression-start static hold** (~10 s).
+8. **Bout 1** — 2 min compressions; note start/end times. Rest ≥ 1 min.
+   Repeat for the planned number of bouts (default 3).
+9. **Closing sync marker**, then `Ctrl+C`. Confirm one `.svo2` per camera in
    `~/zed_rec/`, note sizes, and move to canonical storage paths.
-9. Complete the run sheet (fields below).
+10. **Copy the SVO2s to their canonical storage and checksum them BEFORE any
+    processing** — the SDK auto-repairs corrupt SVOs *in place*, which
+    truncates them (it discarded ~80% of the 2026-07-23 recording, with no
+    backup). Record the post-capture file sizes in the run sheet so later
+    truncation is detectable.
+11. Complete the run sheet (fields below).
 
 **Processing** — as in
 [session-protocol.md Phase 4](session-protocol.md#phase-4--processing-build-the-hybridized-3d--angles):
